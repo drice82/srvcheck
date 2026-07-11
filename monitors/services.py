@@ -86,6 +86,12 @@ def save_outcome(kind, obj, outcome):
     if changed and not (old_status == "unknown" and obj.status == "up"):
         notify_status_change(kind, obj, old_status, outcome.message)
 
+def _send_bark(bark_url, title, body, group):
+    url = f"{bark_url.rstrip('/')}/{quote(title, safe='')}/{quote(body, safe='')}"
+    response = httpx.get(url, params={"group": group}, timeout=10)
+    response.raise_for_status()
+    return True, ""
+
 def notify_status_change(kind, obj, old_status, message):
     setting = NotificationSetting.get_solo()
     if not setting.enabled or not setting.bark_url: return
@@ -95,9 +101,7 @@ def notify_status_change(kind, obj, old_status, message):
     body = f"类型: {monitor_type}\n地址: {address}\n状态: {obj.get_status_display()}"
     success, error = False, ""
     try:
-        url = f"{setting.bark_url.rstrip('/')}/{quote(title, safe='')}/{quote(body, safe='')}"
-        response = httpx.get(url, params={"group": setting.group}, timeout=10)
-        response.raise_for_status(); success = True
+        success, error = _send_bark(setting.bark_url, title, body, setting.group)
     except Exception as exc:
         error = f"{type(exc).__name__}: {str(exc)[:400]}"
     NotificationLog.objects.create(title=title, body=body, success=success, error=error)
@@ -124,3 +128,35 @@ def save_xray_snapshots(node, outcome, checked_at):
             node=node, kind="daily", bucket_start=daily_bucket,
             defaults={**common, "proxy_ip": outcome.proxy_ip},
         )
+
+SUMMARY_HOURS = (8, 20)
+
+def send_summary_report():
+    setting = NotificationSetting.get_solo()
+    monitors = list(TCPMonitor.objects.all()) + list(HTTPMonitor.objects.all()) + list(XrayNode.objects.filter(active_in_subscription=True))
+    counts = {key: sum(m.status == key for m in monitors) for key in ["up", "down", "unknown", "disabled"]}
+    down_items = [m.name for m in monitors if m.status == "down"]
+    title = "SrvCheck 监控概况"
+    body = f"正常: {counts['up']}  异常: {counts['down']}  未知: {counts['unknown']}  停用: {counts['disabled']}"
+    if down_items:
+        body += "\n异常项:\n" + "\n".join(down_items[:20])
+        if len(down_items) > 20: body += f"\n…及其他 {len(down_items) - 20} 项"
+    body += f"\n时间: {timezone.localtime(timezone.now()).strftime('%Y-%m-%d %H:%M')}"
+    success, error = False, ""
+    try:
+        success, error = _send_bark(setting.bark_url, title, body, setting.group)
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {str(exc)[:400]}"
+    NotificationLog.objects.create(title=title, body=body, success=success, error=error)
+    return success, error
+
+def maybe_send_summary():
+    setting = NotificationSetting.get_solo()
+    if not (setting.enabled and setting.summary_enabled and setting.bark_url): return
+    local = timezone.localtime(timezone.now())
+    if local.hour not in SUMMARY_HOURS or local.minute >= 5: return
+    hour_bucket = local.replace(minute=0, second=0, microsecond=0)
+    if setting.summary_last_sent_at and timezone.localtime(setting.summary_last_sent_at) >= hour_bucket: return
+    send_summary_report()
+    setting.summary_last_sent_at = timezone.now()
+    setting.save(update_fields=["summary_last_sent_at"])

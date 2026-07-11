@@ -25,7 +25,7 @@ docker compose ps
 - HTTPS：状态码、TLS 验证、重定向和响应关键词
 - Xray：解析 VMess、VLESS、Trojan、Shadowsocks 订阅；VMess/VLESS/Trojan 执行真实代理探测
 - Xray 出口 IP 使用分层快照：小时快照展示最近、约 6 小时、约 12 小时，日快照展示昨天和前天
-- Bark：故障和恢复状态改变通知
+- Bark：故障和恢复状态改变通知；每天 8:00 与 20:00 发送整体监控概况（可在通知设置中开关）
 
 当前 Shadowsocks 节点可以被同步和展示，但复杂加密参数的真实代理探测将在后续版本完善。
 

@@ -5,7 +5,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from monitors.models import XraySubscription
-from monitors.services import cleanup_history, due_monitors, execute_checks, save_outcome, save_subscription_result, synchronize_subscription
+from monitors.services import cleanup_history, due_monitors, execute_checks, maybe_send_summary, save_outcome, save_subscription_result, synchronize_subscription
 
 class Command(BaseCommand):
     help = "运行服务检查调度器（只应启动一个实例）"
@@ -34,3 +34,4 @@ class Command(BaseCommand):
         if items:
             for kind, obj, outcome in asyncio.run(execute_checks(items)):
                 save_outcome(kind, obj, outcome)
+        maybe_send_summary()

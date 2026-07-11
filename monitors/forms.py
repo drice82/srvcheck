@@ -35,4 +35,4 @@ class XrayNodeForm(StyledForm):
 class NotificationSettingForm(StyledForm):
     class Meta:
         model = NotificationSetting
-        fields = ["bark_url", "enabled", "failure_threshold", "recovery_threshold", "group"]
+        fields = ["bark_url", "enabled", "failure_threshold", "recovery_threshold", "group", "summary_enabled"]

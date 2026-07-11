@@ -142,6 +142,8 @@ class NotificationSetting(models.Model):
     failure_threshold = models.PositiveIntegerField("连续失败阈值", default=2, validators=[MinValueValidator(1)])
     recovery_threshold = models.PositiveIntegerField("连续成功阈值", default=2, validators=[MinValueValidator(1)])
     group = models.CharField("通知分组", max_length=80, default="SrvCheck", blank=True)
+    summary_enabled = models.BooleanField("定时概况通知", default=True, help_text="每天 8:00 与 20:00 发送整体监控概况")
+    summary_last_sent_at = models.DateTimeField(null=True, blank=True, editable=False)
     @classmethod
     def get_solo(cls):
         obj, _ = cls.objects.get_or_create(pk=1)
