@@ -109,7 +109,8 @@ def notify_status_change(kind, obj, old_status, message):
 def cleanup_history(days=30):
     CheckResult.objects.filter(checked_at__lt=timezone.now() - timedelta(days=days)).delete()
     now = timezone.now()
-    XrayNodeSnapshot.objects.filter(kind="hourly", bucket_start__lt=now - timedelta(hours=15)).delete()
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    XrayNodeSnapshot.objects.filter(kind="hourly", bucket_start__lt=current_hour - timedelta(hours=23)).delete()
     local_now = timezone.localtime(now)
     daily_cutoff = local_now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
     XrayNodeSnapshot.objects.filter(kind="daily", bucket_start__lt=daily_cutoff).delete()
@@ -123,11 +124,10 @@ def save_xray_snapshots(node, outcome, checked_at):
         node=node, kind="hourly", bucket_start=hourly_bucket,
         defaults={**common, "proxy_ip": outcome.proxy_ip},
     )
-    if outcome.success and outcome.proxy_ip:
-        XrayNodeSnapshot.objects.update_or_create(
-            node=node, kind="daily", bucket_start=daily_bucket,
-            defaults={**common, "proxy_ip": outcome.proxy_ip},
-        )
+    XrayNodeSnapshot.objects.update_or_create(
+        node=node, kind="daily", bucket_start=daily_bucket,
+        defaults={**common, "proxy_ip": outcome.proxy_ip if outcome.success else None},
+    )
 
 SUMMARY_HOURS = (8, 20)
 

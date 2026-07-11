@@ -31,7 +31,9 @@ def dashboard_partial(request):
 @login_required
 def monitor_list(request, kind):
     config = type_config(kind)
-    return render(request, "monitors/list.html", {"kind": kind, "title": config[2], "objects": config[0].objects.all()})
+    objects = list(config[0].objects.all())
+    prepare_check_result_status_bars(objects, kind, timezone.now())
+    return render(request, "monitors/list.html", {"kind": kind, "title": config[2], "objects": objects})
 
 @login_required
 def monitor_form(request, kind, pk=None):
@@ -69,39 +71,79 @@ def subscription_list(request):
     subscriptions = list(XraySubscription.objects.prefetch_related("nodes"))
     nodes = [node for subscription in subscriptions for node in subscription.nodes.all()]
     now = timezone.now()
-    hourly_by_node = {node.pk: [] for node in nodes}
-    if hourly_by_node:
-        hourly = XrayNodeSnapshot.objects.filter(
-            node_id__in=hourly_by_node, kind="hourly", bucket_start__gte=now - timedelta(hours=15),
-        ).order_by("-checked_at")
-        for snapshot in hourly: hourly_by_node[snapshot.node_id].append(snapshot)
-    targets = [("最近一次检查", None), ("约 6 小时前", now - timedelta(hours=6)), ("约 12 小时前", now - timedelta(hours=12))]
-    for node in nodes:
-        snapshots = hourly_by_node[node.pk]
-        samples = []
-        for label, target in targets:
-            snapshot = snapshots[0] if snapshots and target is None else closest_snapshot(snapshots, target)
-            samples.append(SimpleNamespace(label=label, snapshot=snapshot))
-        node.sample_checks = samples
-    yesterday = timezone.localdate() - timedelta(days=1)
-    day_before = yesterday - timedelta(days=1)
-    daily_ips = {node.pk: {} for node in nodes}
-    if daily_ips:
-        daily_results = XrayNodeSnapshot.objects.filter(
-            node_id__in=daily_ips, kind="daily", bucket_start__gte=now - timedelta(days=3),
-        )
-        for result in daily_results:
-            result_date = timezone.localtime(result.bucket_start).date()
-            if result_date in {yesterday, day_before}: daily_ips[result.node_id][result_date] = result.proxy_ip
-    for node in nodes:
-        node.yesterday_ip = daily_ips[node.pk].get(yesterday)
-        node.day_before_ip = daily_ips[node.pk].get(day_before)
+    prepare_xray_status_bars(nodes, now)
     return render(request, "monitors/subscriptions.html", {"objects": subscriptions})
 
-def closest_snapshot(snapshots, target):
-    if not snapshots or target is None: return None
-    closest = min(snapshots, key=lambda item: abs((item.checked_at - target).total_seconds()))
-    return closest if abs((closest.checked_at - target).total_seconds()) <= 5400 else None
+def prepare_xray_status_bars(nodes, now):
+    node_ids = [node.pk for node in nodes]
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    hourly_starts = [current_hour - timedelta(hours=offset) for offset in range(23, -1, -1)]
+    today = timezone.localdate(now)
+    daily_dates = [today - timedelta(days=offset) for offset in range(7, 0, -1)]
+    snapshots = XrayNodeSnapshot.objects.filter(
+        node_id__in=node_ids,
+        bucket_start__gte=timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7),
+    )
+    hourly = {}
+    daily = {}
+    latest = {}
+    for snapshot in snapshots:
+        if snapshot.kind == "hourly":
+            hourly[(snapshot.node_id, snapshot.bucket_start)] = snapshot
+            if snapshot.node_id not in latest or snapshot.checked_at > latest[snapshot.node_id].checked_at:
+                latest[snapshot.node_id] = snapshot
+        else:
+            daily[(snapshot.node_id, timezone.localtime(snapshot.bucket_start).date())] = snapshot
+    for node in nodes:
+        node.latest_snapshot = latest.get(node.pk)
+        daily_bars = [
+            status_bar(daily.get((node.pk, day)), day.strftime("%Y-%m-%d"), kind="daily")
+            for day in daily_dates
+        ]
+        hourly_bars = [
+            status_bar(hourly.get((node.pk, start)), timezone.localtime(start).strftime("%m-%d %H:00"), kind="hourly")
+            for start in hourly_starts
+        ]
+        mark_ip_changes(daily_bars)
+        mark_ip_changes(hourly_bars)
+        node.status_bars = daily_bars + hourly_bars
+
+def status_bar(snapshot, label, kind):
+    status = "unknown" if snapshot is None else ("up" if snapshot.success else "down")
+    return SimpleNamespace(snapshot=snapshot, label=label, kind=kind, status=status)
+
+def prepare_check_result_status_bars(objects, kind, now):
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    hourly_starts = [current_hour - timedelta(hours=offset) for offset in range(23, -1, -1)]
+    today = timezone.localdate(now)
+    daily_dates = [today - timedelta(days=offset) for offset in range(7, 0, -1)]
+    cutoff = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+    results = CheckResult.objects.filter(
+        monitor_type=kind, monitor_id__in=[obj.pk for obj in objects], checked_at__gte=cutoff,
+    ).only("monitor_id", "success", "checked_at").order_by("checked_at")
+    hourly = {}
+    daily = {}
+    for result in results:
+        hour = result.checked_at.replace(minute=0, second=0, microsecond=0)
+        hourly[(result.monitor_id, hour)] = result
+        daily[(result.monitor_id, timezone.localtime(result.checked_at).date())] = result
+    for obj in objects:
+        obj.status_bars = [
+            status_bar(daily.get((obj.pk, day)), day.strftime("%Y-%m-%d"), "daily")
+            for day in daily_dates
+        ] + [
+            status_bar(hourly.get((obj.pk, start)), timezone.localtime(start).strftime("%m-%d %H:00"), "hourly")
+            for start in hourly_starts
+        ]
+
+def mark_ip_changes(bars):
+    previous_ip = None
+    for bar in bars:
+        if bar.status != "up" or not bar.snapshot.proxy_ip:
+            continue
+        if previous_ip is not None and bar.snapshot.proxy_ip != previous_ip:
+            bar.status = "changed"
+        previous_ip = bar.snapshot.proxy_ip
 
 @login_required
 def node_form(request, pk):

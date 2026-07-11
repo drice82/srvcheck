@@ -7,9 +7,9 @@ from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from .checkers import decode_subscription, parse_proxy_ip, xray_config_from_link
-from .models import NotificationLog, NotificationSetting, TCPMonitor, XrayNode, XrayNodeSnapshot, XraySubscription
+from .models import CheckResult, NotificationLog, NotificationSetting, TCPMonitor, XrayNode, XrayNodeSnapshot, XraySubscription
 from .services import cleanup_history, notify_status_change, save_outcome, save_xray_snapshots
-from .views import closest_snapshot
+from .views import mark_ip_changes, prepare_check_result_status_bars, prepare_xray_status_bars, status_bar
 from .checkers import Outcome
 
 class SubscriptionParserTests(TestCase):
@@ -99,19 +99,64 @@ class SnapshotTests(TestCase):
         self.assertFalse(hourly.success)
         self.assertIsNone(hourly.proxy_ip)
 
-    def test_daily_snapshot_keeps_last_successful_ip(self):
+    def test_daily_snapshot_uses_latest_check_and_clears_ip_on_failure(self):
         now = timezone.now()
         save_xray_snapshots(self.node, Outcome(True, 10, "ok", "203.0.113.2"), now)
         save_xray_snapshots(self.node, Outcome(False, 20, "down", None), now + timedelta(minutes=5))
         daily = XrayNodeSnapshot.objects.get(kind="daily")
-        self.assertEqual(daily.proxy_ip, "203.0.113.2")
+        self.assertFalse(daily.success)
+        self.assertIsNone(daily.proxy_ip)
+        self.assertEqual(daily.checked_at, now + timedelta(minutes=5))
 
-    def test_closest_snapshot_has_ninety_minute_tolerance(self):
-        target = timezone.now() - timedelta(hours=6)
-        close = XrayNodeSnapshot(node=self.node, kind="hourly", bucket_start=target, checked_at=target + timedelta(minutes=45), success=True)
-        far = XrayNodeSnapshot(node=self.node, kind="hourly", bucket_start=target, checked_at=target + timedelta(hours=2), success=True)
-        self.assertIs(closest_snapshot([close], target), close)
-        self.assertIsNone(closest_snapshot([far], target))
+    def test_status_bars_have_seven_days_and_twenty_four_hours(self):
+        now = timezone.now().replace(minute=30, second=0, microsecond=0)
+        save_xray_snapshots(self.node, Outcome(True, 10, "ok", "203.0.113.3"), now)
+        prepare_xray_status_bars([self.node], now)
+        self.assertEqual(len(self.node.status_bars), 31)
+        self.assertEqual([bar.kind for bar in self.node.status_bars[:7]], ["daily"] * 7)
+        self.assertEqual([bar.kind for bar in self.node.status_bars[7:]], ["hourly"] * 24)
+        self.assertEqual(self.node.status_bars[-1].status, "up")
+        self.assertEqual(self.node.latest_snapshot.proxy_ip, "203.0.113.3")
+        self.assertEqual(self.node.status_bars[-2].status, "unknown")
+
+    def test_ip_change_is_marked_as_normal_variant(self):
+        now = timezone.now().replace(minute=0, second=0, microsecond=0)
+        snapshots = [
+            XrayNodeSnapshot(node=self.node, kind="hourly", bucket_start=now, checked_at=now, success=True, proxy_ip="203.0.113.1"),
+            XrayNodeSnapshot(node=self.node, kind="hourly", bucket_start=now + timedelta(hours=1), checked_at=now + timedelta(hours=1), success=True, proxy_ip="203.0.113.2"),
+        ]
+        bars = [status_bar(snapshot, "hour", "hourly") for snapshot in snapshots]
+        mark_ip_changes(bars)
+        self.assertEqual([bar.status for bar in bars], ["up", "changed"])
+
+    def test_cleanup_keeps_24_hour_buckets_and_eight_daily_buckets(self):
+        now = timezone.now()
+        current_hour = now.replace(minute=0, second=0, microsecond=0)
+        local_midnight = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0)
+        for offset in range(25):
+            XrayNodeSnapshot.objects.create(
+                node=self.node, kind="hourly", bucket_start=current_hour - timedelta(hours=offset),
+                checked_at=current_hour - timedelta(hours=offset), success=True,
+            )
+        for offset in range(9):
+            XrayNodeSnapshot.objects.create(
+                node=self.node, kind="daily", bucket_start=local_midnight - timedelta(days=offset),
+                checked_at=local_midnight - timedelta(days=offset), success=True,
+            )
+        cleanup_history()
+        self.assertEqual(XrayNodeSnapshot.objects.filter(kind="hourly").count(), 24)
+        self.assertEqual(XrayNodeSnapshot.objects.filter(kind="daily").count(), 8)
+
+    def test_tcp_status_bars_use_last_result_in_each_bucket(self):
+        monitor = TCPMonitor.objects.create(name="tcp-bars", host="example.com", port=443)
+        now = timezone.now().replace(minute=30, second=0, microsecond=0)
+        CheckResult.objects.create(monitor_type="tcp", monitor_id=monitor.pk, success=True)
+        result = CheckResult.objects.get(monitor_type="tcp", monitor_id=monitor.pk)
+        CheckResult.objects.filter(pk=result.pk).update(checked_at=now)
+        prepare_check_result_status_bars([monitor], "tcp", now)
+        self.assertEqual(len(monitor.status_bars), 31)
+        self.assertEqual(monitor.status_bars[-1].status, "up")
+        self.assertEqual(monitor.status_bars[-2].status, "unknown")
 
 class AuthenticationTests(TestCase):
     def test_dashboard_requires_login(self):
