@@ -1,0 +1,126 @@
+import asyncio
+from datetime import timedelta
+from urllib.parse import quote
+
+import httpx
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
+
+from .checkers import check_http, check_tcp, check_xray, decode_subscription
+from .models import CheckResult, HTTPMonitor, NotificationLog, NotificationSetting, TCPMonitor, XrayNode, XrayNodeSnapshot, XraySubscription
+
+MODEL_TYPES = {"tcp": TCPMonitor, "http": HTTPMonitor, "xray": XrayNode}
+
+async def synchronize_subscription(subscription):
+    try:
+        async with httpx.AsyncClient(timeout=subscription.timeout_seconds, follow_redirects=True, headers={"User-Agent": "SrvCheck/1.0"}) as client:
+            response = await client.get(subscription.url)
+            response.raise_for_status()
+        nodes = decode_subscription(response.text)
+        if not nodes:
+            raise ValueError("订阅中没有识别到支持的节点")
+        return nodes, ""
+    except Exception as exc:
+        return [], f"{type(exc).__name__}: {str(exc)[:400]}"
+
+def save_subscription_result(subscription, nodes, error):
+    now = timezone.now()
+    subscription.last_synced_at = now
+    subscription.next_sync_at = now + timedelta(minutes=subscription.update_interval_minutes)
+    subscription.last_error = error
+    subscription.save(update_fields=["last_synced_at", "next_sync_at", "last_error"])
+    if error: return
+    fingerprints = {node["fingerprint"] for node in nodes}
+    subscription.nodes.exclude(fingerprint__in=fingerprints).update(active_in_subscription=False, enabled=False, status="disabled")
+    for data in nodes:
+        obj, created = XrayNode.objects.get_or_create(subscription=subscription, fingerprint=data["fingerprint"], defaults={**data, "interval_seconds": subscription.check_interval_seconds, "timeout_seconds": subscription.timeout_seconds})
+        if not created:
+            obj.name, obj.share_link, obj.protocol, obj.active_in_subscription = data["name"], data["share_link"], data["protocol"], True
+            obj.interval_seconds, obj.timeout_seconds = subscription.check_interval_seconds, subscription.timeout_seconds
+            if obj.status == "disabled": obj.status, obj.enabled = "unknown", True
+            obj.save(update_fields=["name", "share_link", "protocol", "active_in_subscription", "interval_seconds", "timeout_seconds", "status", "enabled", "updated_at"])
+
+def due_monitors(limit=100):
+    now = timezone.now()
+    result = []
+    for kind, model in MODEL_TYPES.items():
+        query = model.objects.filter(enabled=True)
+        if kind == "xray": query = query.filter(active_in_subscription=True)
+        query = query.filter(next_check_at__isnull=True) | query.filter(next_check_at__lte=now)
+        for obj in query[:limit]:
+            obj.next_check_at = now + timedelta(seconds=obj.interval_seconds)
+            obj.save(update_fields=["next_check_at"])
+            result.append((kind, obj))
+    return result
+
+async def execute_checks(items, concurrency=20):
+    semaphore = asyncio.Semaphore(concurrency)
+    xray_semaphore = asyncio.Semaphore(settings.XRAY_CONCURRENCY)
+    async def one(kind, obj):
+        async with semaphore:
+            checker = {"tcp": check_tcp, "http": check_http, "xray": check_xray}[kind]
+            if kind == "xray":
+                async with xray_semaphore:
+                    return kind, obj, await checker(obj)
+            return kind, obj, await checker(obj)
+    return await asyncio.gather(*(one(*item) for item in items))
+
+def save_outcome(kind, obj, outcome):
+    setting = NotificationSetting.get_solo()
+    now, old_status = timezone.now(), obj.status
+    obj.last_checked_at, obj.last_latency_ms = now, outcome.latency_ms
+    if outcome.success:
+        obj.consecutive_successes += 1; obj.consecutive_failures = 0; obj.last_error = ""
+        if old_status == "unknown" or (old_status == "down" and obj.consecutive_successes >= setting.recovery_threshold):
+            obj.status = "up"
+    else:
+        obj.consecutive_failures += 1; obj.consecutive_successes = 0; obj.last_error = outcome.message
+        if old_status in {"unknown", "up"} and obj.consecutive_failures >= setting.failure_threshold:
+            obj.status = "down"
+    changed = obj.status != old_status
+    if changed: obj.last_changed_at = now
+    obj.save()
+    CheckResult.objects.create(monitor_type=kind, monitor_id=obj.pk, success=outcome.success, latency_ms=outcome.latency_ms, proxy_ip=None if kind == "xray" else outcome.proxy_ip, message=outcome.message)
+    if kind == "xray": save_xray_snapshots(obj, outcome, now)
+    if changed and not (old_status == "unknown" and obj.status == "up"):
+        notify_status_change(kind, obj, old_status, outcome.message)
+
+def notify_status_change(kind, obj, old_status, message):
+    setting = NotificationSetting.get_solo()
+    if not setting.enabled or not setting.bark_url: return
+    title = f"{obj.name} {'恢复正常' if obj.status == 'up' else '发生故障'}"
+    monitor_type = obj.monitor_type_label
+    address = obj.server_host if kind == "xray" else obj.endpoint
+    body = f"类型: {monitor_type}\n地址: {address}\n状态: {obj.get_status_display()}"
+    success, error = False, ""
+    try:
+        url = f"{setting.bark_url.rstrip('/')}/{quote(title, safe='')}/{quote(body, safe='')}"
+        response = httpx.get(url, params={"group": setting.group}, timeout=10)
+        response.raise_for_status(); success = True
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {str(exc)[:400]}"
+    NotificationLog.objects.create(title=title, body=body, success=success, error=error)
+
+def cleanup_history(days=30):
+    CheckResult.objects.filter(checked_at__lt=timezone.now() - timedelta(days=days)).delete()
+    now = timezone.now()
+    XrayNodeSnapshot.objects.filter(kind="hourly", bucket_start__lt=now - timedelta(hours=15)).delete()
+    local_now = timezone.localtime(now)
+    daily_cutoff = local_now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+    XrayNodeSnapshot.objects.filter(kind="daily", bucket_start__lt=daily_cutoff).delete()
+
+def save_xray_snapshots(node, outcome, checked_at):
+    hourly_bucket = checked_at.replace(minute=0, second=0, microsecond=0)
+    local_checked = timezone.localtime(checked_at)
+    daily_bucket = local_checked.replace(hour=0, minute=0, second=0, microsecond=0)
+    common = {"success": outcome.success, "latency_ms": outcome.latency_ms, "checked_at": checked_at}
+    XrayNodeSnapshot.objects.update_or_create(
+        node=node, kind="hourly", bucket_start=hourly_bucket,
+        defaults={**common, "proxy_ip": outcome.proxy_ip},
+    )
+    if outcome.success and outcome.proxy_ip:
+        XrayNodeSnapshot.objects.update_or_create(
+            node=node, kind="daily", bucket_start=daily_bucket,
+            defaults={**common, "proxy_ip": outcome.proxy_ip},
+        )

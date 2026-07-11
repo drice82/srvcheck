@@ -1,0 +1,27 @@
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 60 --access-logfile -
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    volumes:
+      - srvcheck-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/login/', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  scheduler:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    command: python manage.py run_scheduler
+    volumes:
+      - srvcheck-data:/app/data
+    depends_on:
+      web:
+        condition: service_healthy
+volumes:
+  srvcheck-data:
