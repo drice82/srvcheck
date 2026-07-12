@@ -18,8 +18,12 @@ async def synchronize_subscription(subscription):
             response = await client.get(subscription.url)
             response.raise_for_status()
         nodes = decode_subscription(response.text)
+        # Providers commonly use the first pseudo-node for traffic/quota text.
+        # It is not a proxy endpoint; keep every subsequent entry as-is,
+        # including repeated fingerprints.
+        nodes = nodes[1:]
         if not nodes:
-            raise ValueError("订阅中没有识别到支持的节点")
+            raise ValueError("订阅去掉首个信息节点后没有可用节点")
         return nodes, ""
     except Exception as exc:
         return [], f"{type(exc).__name__}: {str(exc)[:400]}"
@@ -34,15 +38,6 @@ def save_subscription_result(subscription, nodes, error):
     subscription.last_error = error
     subscription.save(update_fields=["last_synced_at", "next_sync_at", "last_error"])
     if error: return
-
-    # A few subscription providers emit the same share link more than once.
-    # XrayNode intentionally has a unique (subscription, fingerprint) key, so
-    # normalize the feed before matching it to existing rows.  Keep the last
-    # occurrence because providers may append a corrected version later.
-    unique_nodes = {}
-    for data in nodes:
-        unique_nodes[data["fingerprint"]] = data
-    nodes = list(unique_nodes.values())
 
     existing = list(subscription.nodes.select_for_update())
     unused = {obj.pk: obj for obj in existing}

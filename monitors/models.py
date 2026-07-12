@@ -72,7 +72,6 @@ class XrayNode(MonitorBase):
     active_in_subscription = models.BooleanField(default=True)
     class Meta:
         ordering = ["subscription", "name"]
-        constraints = [models.UniqueConstraint(fields=["subscription", "fingerprint"], name="unique_subscription_node")]
     def __str__(self): return self.name
     @property
     def endpoint(self): return f"{self.protocol}://{self.name}"

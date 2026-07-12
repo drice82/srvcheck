@@ -1,14 +1,14 @@
 import asyncio
 import base64
 import httpx
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from datetime import timedelta
 from django.utils import timezone
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from .checkers import decode_subscription, parse_proxy_ip, xray_config_from_link
 from .models import CheckResult, NotificationLog, NotificationSetting, TCPMonitor, XrayNode, XrayNodeSnapshot, XraySubscription
-from .services import cleanup_history, notify_status_change, save_outcome, save_subscription_result, save_xray_snapshots
+from .services import cleanup_history, notify_status_change, save_outcome, save_subscription_result, save_xray_snapshots, synchronize_subscription
 from .views import mark_ip_changes, prepare_check_result_status_bars, prepare_xray_status_bars, status_bar
 from .checkers import Outcome
 
@@ -31,6 +31,27 @@ class SubscriptionSyncTests(TestCase):
             "fingerprint": fingerprint,
             "share_link": f"{protocol}://uuid@{host}:443#{name}",
         }
+
+    @patch("monitors.services.httpx.AsyncClient")
+    def test_download_discards_first_entry_and_keeps_the_rest(self, async_client):
+        response = Mock()
+        response.text = "\n".join([
+            "vless://info@example.com:443#Remaining%20100GB",
+            "vless://same@example.com:443#A",
+            "vless://same@example.com:443#A%20duplicate",
+        ])
+        response.raise_for_status = Mock()
+        client = AsyncMock()
+        client.get.return_value = response
+        context = AsyncMock()
+        context.__aenter__.return_value = client
+        async_client.return_value = context
+
+        nodes, error = asyncio.run(synchronize_subscription(self.subscription))
+
+        self.assertEqual(error, "")
+        self.assertEqual([node["name"] for node in nodes], ["A", "A duplicate"])
+        self.assertEqual(nodes[0]["fingerprint"], nodes[1]["fingerprint"])
 
     def test_address_change_reuses_node_and_preserves_history(self):
         save_subscription_result(self.subscription, [self.node_data("Hong Kong", "a" * 64)], "")
@@ -70,7 +91,7 @@ class SubscriptionSyncTests(TestCase):
         save_subscription_result(self.subscription, [], "download failed")
         self.assertEqual(self.subscription.nodes.filter(active_in_subscription=True).count(), 1)
 
-    def test_duplicate_fingerprints_in_feed_are_ignored(self):
+    def test_duplicate_fingerprints_in_feed_are_preserved(self):
         duplicate = self.node_data("A duplicate", "a" * 64)
         save_subscription_result(self.subscription, [
             self.node_data("A", "a" * 64),
@@ -78,8 +99,11 @@ class SubscriptionSyncTests(TestCase):
             self.node_data("B", "b" * 64),
         ], "")
 
-        self.assertEqual(self.subscription.nodes.count(), 2)
-        self.assertEqual(self.subscription.nodes.get(fingerprint="a" * 64).name, "A duplicate")
+        self.assertEqual(self.subscription.nodes.count(), 3)
+        self.assertEqual(
+            list(self.subscription.nodes.filter(fingerprint="a" * 64).values_list("name", flat=True)),
+            ["A", "A duplicate"],
+        )
 
     def test_subscription_page_only_contains_active_nodes(self):
         user = get_user_model().objects.create_user(username="admin", password="secret")
