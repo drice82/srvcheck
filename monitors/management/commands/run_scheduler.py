@@ -28,8 +28,16 @@ class Command(BaseCommand):
         now = timezone.now()
         subscriptions = XraySubscription.objects.filter(enabled=True).filter(next_sync_at__isnull=True) | XraySubscription.objects.filter(enabled=True, next_sync_at__lte=now)
         for subscription in subscriptions[:5]:
-            nodes, error = asyncio.run(synchronize_subscription(subscription))
-            save_subscription_result(subscription, nodes, error)
+            try:
+                nodes, error = asyncio.run(synchronize_subscription(subscription))
+                save_subscription_result(subscription, nodes, error)
+            except Exception as exc:
+                # Subscription data must not be able to stop all monitor checks
+                # (and therefore leave entire hourly snapshot buckets empty).
+                self.stderr.write(
+                    f"subscription sync failed ({subscription.pk} {subscription.name}): "
+                    f"{type(exc).__name__}: {exc}"
+                )
         items = due_monitors()
         if items:
             for kind, obj, outcome in asyncio.run(execute_checks(items)):

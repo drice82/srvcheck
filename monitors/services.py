@@ -24,22 +24,56 @@ async def synchronize_subscription(subscription):
     except Exception as exc:
         return [], f"{type(exc).__name__}: {str(exc)[:400]}"
 
+@transaction.atomic
 def save_subscription_result(subscription, nodes, error):
+    # Serialize manual and scheduled syncs for the same subscription.
+    XraySubscription.objects.select_for_update().get(pk=subscription.pk)
     now = timezone.now()
     subscription.last_synced_at = now
     subscription.next_sync_at = now + timedelta(minutes=subscription.update_interval_minutes)
     subscription.last_error = error
     subscription.save(update_fields=["last_synced_at", "next_sync_at", "last_error"])
     if error: return
-    fingerprints = {node["fingerprint"] for node in nodes}
-    subscription.nodes.exclude(fingerprint__in=fingerprints).update(active_in_subscription=False, enabled=False, status="disabled")
+
+    # A few subscription providers emit the same share link more than once.
+    # XrayNode intentionally has a unique (subscription, fingerprint) key, so
+    # normalize the feed before matching it to existing rows.  Keep the last
+    # occurrence because providers may append a corrected version later.
+    unique_nodes = {}
     for data in nodes:
-        obj, created = XrayNode.objects.get_or_create(subscription=subscription, fingerprint=data["fingerprint"], defaults={**data, "interval_seconds": subscription.check_interval_seconds, "timeout_seconds": subscription.timeout_seconds})
-        if not created:
-            obj.name, obj.share_link, obj.protocol, obj.active_in_subscription = data["name"], data["share_link"], data["protocol"], True
-            obj.interval_seconds, obj.timeout_seconds = subscription.check_interval_seconds, subscription.timeout_seconds
-            if obj.status == "disabled": obj.status, obj.enabled = "unknown", True
-            obj.save(update_fields=["name", "share_link", "protocol", "active_in_subscription", "interval_seconds", "timeout_seconds", "status", "enabled", "updated_at"])
+        unique_nodes[data["fingerprint"]] = data
+    nodes = list(unique_nodes.values())
+
+    existing = list(subscription.nodes.select_for_update())
+    unused = {obj.pk: obj for obj in existing}
+    incoming_identity_counts = {}
+    for data in nodes:
+        identity = (data["protocol"], data["name"])
+        incoming_identity_counts[identity] = incoming_identity_counts.get(identity, 0) + 1
+
+    matched = []
+    for data in nodes:
+        obj = next((item for item in unused.values() if item.fingerprint == data["fingerprint"]), None)
+        identity = (data["protocol"], data["name"])
+        if obj is None and incoming_identity_counts[identity] == 1:
+            candidates = [item for item in unused.values() if (item.protocol, item.name) == identity]
+            if len(candidates) == 1:
+                obj = candidates[0]
+        if obj is None:
+            obj = XrayNode(subscription=subscription)
+        else:
+            unused.pop(obj.pk, None)
+
+        obj.name, obj.share_link, obj.protocol = data["name"], data["share_link"], data["protocol"]
+        obj.fingerprint, obj.active_in_subscription = data["fingerprint"], True
+        obj.interval_seconds, obj.timeout_seconds = subscription.check_interval_seconds, subscription.timeout_seconds
+        if obj.status == "disabled": obj.status, obj.enabled = "unknown", True
+        obj.save()
+        matched.append(obj.pk)
+
+    subscription.nodes.exclude(pk__in=matched).update(
+        active_in_subscription=False, enabled=False, status="disabled", next_check_at=None,
+    )
 
 def due_monitors(limit=100):
     now = timezone.now()

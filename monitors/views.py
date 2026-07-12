@@ -3,6 +3,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.db.models import Prefetch
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -68,8 +69,14 @@ def check_now(request, kind, pk):
 
 @login_required
 def subscription_list(request):
-    subscriptions = list(XraySubscription.objects.prefetch_related("nodes"))
-    nodes = [node for subscription in subscriptions for node in subscription.nodes.all()]
+    subscriptions = list(XraySubscription.objects.prefetch_related(
+        Prefetch(
+            "nodes",
+            queryset=XrayNode.objects.filter(active_in_subscription=True),
+            to_attr="active_nodes",
+        )
+    ))
+    nodes = [node for subscription in subscriptions for node in subscription.active_nodes]
     now = timezone.now()
     prepare_xray_status_bars(nodes, now)
     return render(request, "monitors/subscriptions.html", {"objects": subscriptions})

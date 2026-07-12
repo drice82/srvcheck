@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from .checkers import decode_subscription, parse_proxy_ip, xray_config_from_link
 from .models import CheckResult, NotificationLog, NotificationSetting, TCPMonitor, XrayNode, XrayNodeSnapshot, XraySubscription
-from .services import cleanup_history, notify_status_change, save_outcome, save_xray_snapshots
+from .services import cleanup_history, notify_status_change, save_outcome, save_subscription_result, save_xray_snapshots
 from .views import mark_ip_changes, prepare_check_result_status_bars, prepare_xray_status_bars, status_bar
 from .checkers import Outcome
 
@@ -19,6 +19,86 @@ class SubscriptionParserTests(TestCase):
         nodes = decode_subscription(encoded)
         self.assertEqual([n["protocol"] for n in nodes], ["vless", "trojan"])
         self.assertEqual(nodes[0]["name"], "Hong Kong")
+
+class SubscriptionSyncTests(TestCase):
+    def setUp(self):
+        self.subscription = XraySubscription.objects.create(name="sub", url="https://example.com/sub")
+
+    def node_data(self, name, fingerprint, host="old.example.com", protocol="vless"):
+        return {
+            "name": name,
+            "protocol": protocol,
+            "fingerprint": fingerprint,
+            "share_link": f"{protocol}://uuid@{host}:443#{name}",
+        }
+
+    def test_address_change_reuses_node_and_preserves_history(self):
+        save_subscription_result(self.subscription, [self.node_data("Hong Kong", "a" * 64)], "")
+        node = self.subscription.nodes.get()
+        snapshot = XrayNodeSnapshot.objects.create(
+            node=node, kind="hourly", bucket_start=timezone.now(),
+            checked_at=timezone.now(), success=True,
+        )
+
+        save_subscription_result(
+            self.subscription,
+            [self.node_data("Hong Kong", "b" * 64, host="new.example.com")],
+            "",
+        )
+
+        self.assertEqual(self.subscription.nodes.count(), 1)
+        updated = self.subscription.nodes.get()
+        self.assertEqual(updated.pk, node.pk)
+        self.assertEqual(updated.fingerprint, "b" * 64)
+        self.assertIn("new.example.com", updated.share_link)
+        self.assertEqual(snapshot.node_id, updated.pk)
+
+    def test_removed_nodes_are_inactive_and_not_scheduled(self):
+        save_subscription_result(self.subscription, [
+            self.node_data("A", "a" * 64),
+            self.node_data("B", "b" * 64),
+        ], "")
+        save_subscription_result(self.subscription, [self.node_data("A", "a" * 64)], "")
+
+        self.assertEqual(self.subscription.nodes.filter(active_in_subscription=True).count(), 1)
+        removed = self.subscription.nodes.get(name="B")
+        self.assertFalse(removed.enabled)
+        self.assertIsNone(removed.next_check_at)
+
+    def test_sync_error_keeps_current_nodes(self):
+        save_subscription_result(self.subscription, [self.node_data("A", "a" * 64)], "")
+        save_subscription_result(self.subscription, [], "download failed")
+        self.assertEqual(self.subscription.nodes.filter(active_in_subscription=True).count(), 1)
+
+    def test_duplicate_fingerprints_in_feed_are_ignored(self):
+        duplicate = self.node_data("A duplicate", "a" * 64)
+        save_subscription_result(self.subscription, [
+            self.node_data("A", "a" * 64),
+            duplicate,
+            self.node_data("B", "b" * 64),
+        ], "")
+
+        self.assertEqual(self.subscription.nodes.count(), 2)
+        self.assertEqual(self.subscription.nodes.get(fingerprint="a" * 64).name, "A duplicate")
+
+    def test_subscription_page_only_contains_active_nodes(self):
+        user = get_user_model().objects.create_user(username="admin", password="secret")
+        XrayNode.objects.create(
+            subscription=self.subscription, name="Current", protocol="vless",
+            fingerprint="a" * 64, share_link="vless://uuid@current.example.com:443#Current",
+        )
+        XrayNode.objects.create(
+            subscription=self.subscription, name="Obsolete", protocol="vless",
+            fingerprint="b" * 64, share_link="vless://uuid@old.example.com:443#Obsolete",
+            active_in_subscription=False, enabled=False, status="disabled",
+        )
+        self.client.force_login(user)
+
+        response = self.client.get("/subscriptions/")
+
+        self.assertContains(response, "节点 1")
+        self.assertContains(response, "Current")
+        self.assertNotContains(response, "Obsolete")
 
     def test_vless_reality_config_has_required_fields_and_no_allow_insecure(self):
         link = "vless://00000000-0000-4000-8000-000000000001@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG&sid=0123456789abcdef&type=tcp#Reality"

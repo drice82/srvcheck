@@ -10,7 +10,7 @@
     <div class="min-w-0">
       <h2 class="text-lg font-bold">{{ object.name }}</h2>
       <p class="break-all text-sm text-slate-600">{{ object.url }}</p>
-      <p class="text-sm text-slate-500">节点 {{ object.nodes.count }} · 上次更新 {{ object.last_synced_at|date:"Y-m-d H:i:s"|default:"-" }}</p>
+      <p class="text-sm text-slate-500">节点 {{ object.active_nodes|length }} · 上次更新 {{ object.last_synced_at|date:"Y-m-d H:i:s"|default:"-" }}</p>
       {% if object.last_error %}<p class="font-medium text-red-700">⚠ 订阅更新失败</p>{% endif %}
     </div>
     <div class="ml-auto shrink-0 space-x-3 pl-4">
@@ -20,7 +20,7 @@
     </div>
   </div>
   <div class="mt-4 space-y-3">
-    {% for node in object.nodes.all %}
+    {% for node in object.active_nodes %}
     <div class="rounded-lg border p-4 {% if node.status == 'down' %}border-red-300 bg-red-50{% else %}border-slate-200 bg-slate-50{% endif %}">
       <div class="flex flex-wrap items-center gap-3">
         <div class="min-w-48">
