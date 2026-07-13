@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from .checkers import decode_subscription, parse_proxy_ip, xray_config_from_link
 from .models import CheckResult, NotificationLog, NotificationSetting, TCPMonitor, XrayNode, XrayNodeSnapshot, XraySubscription
-from .services import cleanup_history, notify_status_change, save_outcome, save_subscription_result, save_xray_snapshots, synchronize_subscription
+from .services import cleanup_history, notify_status_change, save_outcome, save_subscription_result, save_xray_snapshots, send_summary_report, synchronize_subscription
 from .views import mark_ip_changes, prepare_check_result_status_bars, prepare_xray_status_bars, status_bar
 from .checkers import Outcome
 
@@ -164,7 +164,7 @@ class SubscriptionSyncTests(TestCase):
     def test_bark_uses_specific_type_host_and_current_status(self, http_get):
         http_get.return_value = Mock(raise_for_status=Mock())
         setting = NotificationSetting.get_solo()
-        setting.enabled, setting.bark_url = True, "https://api.day.app/device"
+        setting.enabled, setting.bark_url, setting.server_name = True, "https://api.day.app/device", "新加坡 01"
         setting.save()
         subscription = XraySubscription.objects.create(name="sub2", url="https://example.com/sub2")
         node = XrayNode.objects.create(
@@ -172,7 +172,33 @@ class SubscriptionSyncTests(TestCase):
             share_link="trojan://password@cdn1.cugon.cn:443?security=tls#node", status="down",
         )
         notify_status_change("xray", node, "up", "ignored")
-        self.assertEqual(NotificationLog.objects.first().body, "类型: Trojan\n地址: cdn1.cugon.cn\n状态: 异常")
+        log = NotificationLog.objects.first()
+        self.assertEqual(log.title, "[新加坡 01] node 发生故障")
+        self.assertEqual(log.body, "类型: Trojan\n地址: cdn1.cugon.cn\n状态: 异常")
+        self.assertIn("%5B%E6%96%B0%E5%8A%A0%E5%9D%A1%2001%5D%20node%20%E5%8F%91%E7%94%9F%E6%95%85%E9%9A%9C", http_get.call_args.args[0])
+
+    @patch("monitors.services.httpx.get")
+    def test_summary_title_contains_server_name(self, http_get):
+        http_get.return_value = Mock(raise_for_status=Mock())
+        setting = NotificationSetting.get_solo()
+        setting.bark_url, setting.server_name = "https://api.day.app/device", "东京-02"
+        setting.save()
+
+        send_summary_report()
+
+        self.assertEqual(NotificationLog.objects.first().title, "[东京-02] SrvCheck 监控概况")
+
+    @patch("monitors.services.httpx.get")
+    def test_blank_server_name_uses_default(self, http_get):
+        http_get.return_value = Mock(raise_for_status=Mock())
+        setting = NotificationSetting.get_solo()
+        setting.enabled, setting.bark_url, setting.server_name = True, "https://api.day.app/device", "   "
+        setting.save()
+        monitor = TCPMonitor.objects.create(name="tcp", host="127.0.0.1", port=9, status="up")
+
+        notify_status_change("tcp", monitor, "down", "ignored")
+
+        self.assertEqual(NotificationLog.objects.first().title, "[SrvCheck服务器] tcp 恢复正常")
 
 class StateTransitionTests(TestCase):
     def test_failure_and_recovery_thresholds(self):

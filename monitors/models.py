@@ -138,6 +138,10 @@ class XrayNodeSnapshot(models.Model):
 class NotificationSetting(models.Model):
     bark_url = models.URLField("Bark 地址", max_length=1000, blank=True, help_text="例如 https://api.day.app/设备Key")
     enabled = models.BooleanField("启用通知", default=False)
+    server_name = models.CharField(
+        "服务器标识", max_length=80, default="SrvCheck服务器",
+        help_text="用于区分通知来源，例如：新加坡-01",
+    )
     failure_threshold = models.PositiveIntegerField("连续失败阈值", default=2, validators=[MinValueValidator(1)])
     recovery_threshold = models.PositiveIntegerField("连续成功阈值", default=2, validators=[MinValueValidator(1)])
     group = models.CharField("通知分组", max_length=80, default="SrvCheck", blank=True)

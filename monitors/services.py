@@ -121,10 +121,14 @@ def _send_bark(bark_url, title, body, group):
     response.raise_for_status()
     return True, ""
 
+def _notification_title(setting, title):
+    server_name = setting.server_name.strip() or "SrvCheck服务器"
+    return f"[{server_name}] {title}"
+
 def notify_status_change(kind, obj, old_status, message):
     setting = NotificationSetting.get_solo()
     if not setting.enabled or not setting.bark_url: return
-    title = f"{obj.name} {'恢复正常' if obj.status == 'up' else '发生故障'}"
+    title = _notification_title(setting, f"{obj.name} {'恢复正常' if obj.status == 'up' else '发生故障'}")
     monitor_type = obj.monitor_type_label
     address = obj.server_host if kind == "xray" else obj.endpoint
     body = f"类型: {monitor_type}\n地址: {address}\n状态: {obj.get_status_display()}"
@@ -165,7 +169,7 @@ def send_summary_report():
     monitors = list(TCPMonitor.objects.all()) + list(HTTPMonitor.objects.all()) + list(XrayNode.objects.filter(active_in_subscription=True))
     counts = {key: sum(m.status == key for m in monitors) for key in ["up", "down", "unknown", "disabled"]}
     down_items = [m.name for m in monitors if m.status == "down"]
-    title = "SrvCheck 监控概况"
+    title = _notification_title(setting, "SrvCheck 监控概况")
     body = f"正常: {counts['up']}  异常: {counts['down']}  未知: {counts['unknown']}  停用: {counts['disabled']}"
     if down_items:
         body += "\n异常项:\n" + "\n".join(down_items[:20])
