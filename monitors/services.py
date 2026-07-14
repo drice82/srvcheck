@@ -256,11 +256,14 @@ def notify_status_change(node, action, latest):
     if not setting.enabled or not setting.bark_url:
         return
     recovering = action == "up"
-    title = _notification_title(setting, f"{node.name} {'恢复正常' if recovering else '发生故障'}")
+    status_icon = "✅" if recovering else "🚨"
+    title = _notification_title(
+        setting, f"{status_icon} {node.name} {'恢复正常' if recovering else '发生故障'}"
+    )
     lines = [
         f"类型: {node.monitor_type_label}",
         f"地址: {node.server_host}",
-        f"状态: {'正常' if recovering else '异常'}",
+        f"状态: {status_icon} {'正常' if recovering else '异常/故障'}",
     ]
     for result in sorted(latest.values(), key=lambda value: value.test_point.name):
         lines.append(f"{result.test_point.name}: {'正常' if result.success else '异常'}")

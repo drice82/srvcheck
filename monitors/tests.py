@@ -185,6 +185,9 @@ class AggregationTests(BaseNodeTest):
         self.node.refresh_from_db()
         self.assertTrue(self.node.incident_open)
         self.assertEqual(NotificationLog.objects.count(), 1)
+        notification = NotificationLog.objects.get()
+        self.assertIn("🚨", notification.title)
+        self.assertIn("状态: 🚨 异常/故障", notification.body)
 
     def test_two_failures_required_with_multiple_clients(self):
         a = TestPoint.objects.create(name="深圳")
@@ -234,6 +237,9 @@ class AggregationTests(BaseNodeTest):
         self.node.refresh_from_db()
         self.assertFalse(self.node.incident_open)
         self.assertEqual(NotificationLog.objects.count(), 2)
+        titles = list(NotificationLog.objects.values_list("title", flat=True))
+        self.assertTrue(any("🚨" in title for title in titles))
+        self.assertTrue(any("✅" in title for title in titles))
 
 
 class SnapshotAndViewTests(BaseNodeTest):
