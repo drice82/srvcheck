@@ -41,8 +41,5 @@ LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "dashboard"
 LOGOUT_REDIRECT_URL = "login"
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-XRAY_EXECUTABLE = os.getenv("XRAY_EXECUTABLE", "xray")
-XRAY_PROBE_URL = os.getenv("XRAY_PROBE_URL", "https://www.gstatic.com/generate_204")
-XRAY_IP_CHECK_URL = os.getenv("XRAY_IP_CHECK_URL", "https://api.ipify.org?format=json")
-XRAY_CONCURRENCY = int(os.getenv("XRAY_CONCURRENCY", "4"))
 SCHEDULER_TICK_SECONDS = float(os.getenv("SCHEDULER_TICK_SECONDS", "2"))
+CLIENT_API_TOKEN = os.getenv("CLIENT_API_TOKEN", "")

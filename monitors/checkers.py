@@ -12,7 +12,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
-from django.conf import settings
 
 @dataclass
 class Outcome:
@@ -20,29 +19,6 @@ class Outcome:
     latency_ms: int | None = None
     message: str = ""
     proxy_ip: str | None = None
-
-async def check_tcp(monitor):
-    started = time.monotonic()
-    try:
-        _, writer = await asyncio.wait_for(asyncio.open_connection(monitor.host, monitor.port), monitor.timeout_seconds)
-        writer.close()
-        await writer.wait_closed()
-        return Outcome(True, int((time.monotonic() - started) * 1000), "TCP 连接成功")
-    except Exception as exc:
-        return Outcome(False, int((time.monotonic() - started) * 1000), safe_error(exc))
-
-async def check_http(monitor):
-    started = time.monotonic()
-    try:
-        async with httpx.AsyncClient(verify=monitor.verify_tls, follow_redirects=monitor.follow_redirects, timeout=monitor.timeout_seconds) as client:
-            response = await client.get(monitor.url)
-        if not monitor.expected_status_min <= response.status_code <= monitor.expected_status_max:
-            return Outcome(False, int((time.monotonic() - started) * 1000), f"HTTP {response.status_code} 不在期望范围")
-        if monitor.keyword and monitor.keyword not in response.text:
-            return Outcome(False, int((time.monotonic() - started) * 1000), "响应中未找到关键词")
-        return Outcome(True, int((time.monotonic() - started) * 1000), f"HTTP {response.status_code}")
-    except Exception as exc:
-        return Outcome(False, int((time.monotonic() - started) * 1000), safe_error(exc))
 
 def safe_error(exc):
     return f"{type(exc).__name__}: {str(exc)[:350]}"
@@ -189,7 +165,7 @@ def free_port():
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
 
-async def check_xray(node):
+async def check_xray(node, xray_executable=None, ip_check_url=None):
     started, port = time.monotonic(), free_port()
     process = None
     try:
@@ -198,10 +174,12 @@ async def check_xray(node):
             path = Path(tmp) / "config.json"
             path.write_text(json.dumps(config), encoding="utf-8")
             os.chmod(path, 0o600)
-            process = await asyncio.create_subprocess_exec(settings.XRAY_EXECUTABLE, "run", "-c", str(path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            executable = xray_executable or os.getenv("XRAY_EXECUTABLE", "xray")
+            check_url = ip_check_url or os.getenv("XRAY_IP_CHECK_URL", "https://api.ipify.org?format=json")
+            process = await asyncio.create_subprocess_exec(executable, "run", "-c", str(path), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             await wait_port(port, min(node.timeout_seconds, 5), process)
             async with httpx.AsyncClient(proxy=f"socks5://127.0.0.1:{port}", timeout=node.timeout_seconds) as client:
-                response = await client.get(settings.XRAY_IP_CHECK_URL)
+                response = await client.get(check_url)
             if response.status_code >= 400:
                 raise RuntimeError(f"探测地址返回 HTTP {response.status_code}")
             proxy_ip = parse_proxy_ip(response)

@@ -1,60 +1,32 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="mb-6 flex justify-between">
-  <h1 class="text-3xl font-bold">Xray 订阅</h1>
-  <a class="rounded-lg bg-cyan-600 px-4 py-2 text-white" href="{% url 'subscription-new' %}">添加订阅</a>
+<div class="mb-6 flex justify-between"><h1 class="text-3xl font-bold">Xray 订阅</h1><a class="rounded-lg bg-cyan-600 px-4 py-2 text-white" href="{% url 'subscription-new' %}">添加订阅</a></div>
+<div class="mb-5 flex flex-wrap gap-3 text-xs text-slate-600">
+  {% for point in test_points %}<span class="rounded-full border bg-white px-3 py-1">{{ forloop.counter }} · {{ point.name }}</span>{% empty %}<span class="text-amber-700">请先添加测试点</span>{% endfor %}
 </div>
 {% for object in objects %}
 <section class="mb-5 rounded-xl bg-white p-5 shadow-sm">
-  <div class="flex items-center">
-    <div class="min-w-0">
-      <h2 class="text-lg font-bold">{{ object.name }}</h2>
-      <p class="break-all text-sm text-slate-600">{{ object.url }}</p>
-      <p class="text-sm text-slate-500">节点 {{ object.active_nodes|length }} · 上次更新 {{ object.last_synced_at|date:"Y-m-d H:i:s"|default:"-" }}</p>
-      {% if object.last_error %}<p class="font-medium text-red-700">⚠ 订阅更新失败</p>{% endif %}
-    </div>
-    <div class="ml-auto shrink-0 space-x-3 pl-4">
-      <form class="inline" method="post" action="{% url 'subscription-sync' object.pk %}">{% csrf_token %}<button class="text-cyan-700">立即更新</button></form>
-      <a href="{% url 'subscription-edit' object.pk %}">编辑</a>
-      <form class="inline" method="post" action="{% url 'subscription-delete' object.pk %}">{% csrf_token %}<button class="text-red-600">删除</button></form>
-    </div>
+  <div class="flex items-center"><div class="min-w-0"><h2 class="text-lg font-bold">{{ object.name }}</h2><p class="break-all text-sm text-slate-600">{{ object.url }}</p><p class="text-sm text-slate-500">节点 {{ object.active_nodes|length }} · 测试间隔 {{ object.check_interval_seconds }} 秒 · 上次更新 {{ object.last_synced_at|date:"Y-m-d H:i:s"|default:"-" }}</p>{% if object.last_error %}<p class="font-medium text-red-700">⚠ {{ object.last_error }}</p>{% endif %}</div>
+    <div class="ml-auto shrink-0 space-x-3 pl-4"><form class="inline" method="post" action="{% url 'subscription-sync' object.pk %}">{% csrf_token %}<button class="text-cyan-700">立即更新</button></form><a href="{% url 'subscription-edit' object.pk %}">编辑</a><form class="inline" method="post" action="{% url 'subscription-delete' object.pk %}">{% csrf_token %}<button class="text-red-600">删除</button></form></div>
   </div>
   <div class="mt-4 space-y-3">
     {% for node in object.active_nodes %}
     <div class="rounded-lg border p-4 {% if node.status == 'down' %}border-red-300 bg-red-50{% else %}border-slate-200 bg-slate-50{% endif %}">
-      <div class="flex flex-wrap items-center gap-3">
-        <div class="min-w-48">
-          <div class="flex items-center gap-2">
-            <span class="font-bold">{{ node.name }}</span>
-            {% if node.latest_snapshot %}
-              {% if node.latest_snapshot.success %}<span class="text-sm font-bold text-emerald-700">● 正常</span>{% else %}<span class="text-sm font-bold text-red-700">● 异常</span>{% endif %}
-            {% else %}<span class="text-sm font-semibold text-slate-500">● 未知</span>{% endif %}
-          </div>
-          <div class="mt-1 flex flex-wrap items-center gap-2 text-sm">
-            <span class="rounded bg-slate-800 px-2 py-0.5 text-xs font-bold text-white">{{ node.monitor_type_label }}</span>
-            <span class="font-mono text-slate-700">{{ node.server_address }}</span>
-          </div>
-        </div>
-        <div class="order-last w-full basis-full overflow-x-auto border-t border-slate-200 px-1 pb-1 pt-10 lg:order-none lg:w-auto lg:min-w-0 lg:basis-0 lg:flex-1 lg:border-0">
-          <div class="flex min-w-max items-end gap-px sm:gap-1" aria-label="节点状态历史">
-            {% for bar in node.status_bars %}
-            <div class="group relative {% if bar.kind == 'hourly' and forloop.counter == 8 %}ml-3{% endif %}" tabindex="0" aria-label="{{ bar.label }}：{% if bar.status == 'up' %}正常，IP {{ bar.snapshot.proxy_ip|default:'无' }}{% elif bar.status == 'changed' %}正常，IP 已变化为 {{ bar.snapshot.proxy_ip }}{% elif bar.status == 'down' %}异常{% else %}暂无数据{% endif %}">
-              <div class="h-6 w-2 rounded-sm sm:w-3 {% if bar.status == 'up' %}bg-emerald-500{% elif bar.status == 'changed' %}bg-amber-400{% elif bar.status == 'down' %}bg-red-500{% else %}bg-slate-300{% endif %}"></div>
-              <div class="pointer-events-none absolute bottom-8 z-10 hidden whitespace-nowrap rounded bg-slate-900 px-2 py-1.5 text-xs text-white shadow-lg group-hover:block group-focus:block {% if forloop.counter <= 7 %}left-0{% elif forloop.counter > 24 %}right-0{% else %}left-1/2 -translate-x-1/2{% endif %}">
-                <span class="font-semibold">{{ bar.label }}</span><span class="mx-1 text-slate-400">·</span>{% if bar.status == 'up' %}<span class="font-mono">{{ bar.snapshot.proxy_ip|default:"无 IP" }}</span>{% elif bar.status == 'changed' %}<span class="font-mono">{{ bar.snapshot.proxy_ip }}</span><span class="ml-1 text-amber-300">IP 已变化</span>{% elif bar.status == 'down' %}<span>异常</span>{% else %}<span>暂无数据</span>{% endif %}
-              </div>
+      <div class="flex flex-wrap items-center gap-4">
+        <div class="min-w-48"><div class="flex items-center gap-2"><span class="font-bold">{{ node.name }}</span><span>{% include "monitors/_status_badge.html" with object=node %}</span></div><div class="mt-1 flex gap-2 text-sm"><span class="rounded bg-slate-800 px-2 py-0.5 text-xs font-bold text-white">{{ node.monitor_type_label }}</span><span class="font-mono">{{ node.server_address }}</span></div></div>
+        <div class="order-last w-full basis-full overflow-x-auto border-t border-slate-200 px-1 pb-1 pt-5 lg:order-none lg:w-auto lg:min-w-0 lg:basis-0 lg:flex-1 lg:border-0">
+          <div class="flex min-w-max items-end gap-px sm:gap-1" aria-label="各测试点状态历史">
+          {% for bar in node.status_bars %}
+            <div class="flex w-2 flex-col gap-px sm:w-3 {% if bar.kind == 'hourly' and forloop.counter == 8 %}ml-3{% endif %}" aria-label="{{ bar.label }}">
+            {% for segment in bar.segments %}
+              <div class="h-2 rounded-[1px] {% if segment.status == 'up' %}bg-emerald-500{% elif segment.status == 'changed' %}bg-amber-400{% elif segment.status == 'down' %}bg-red-500{% else %}bg-slate-300{% endif %}" title="{{ bar.label }} · {{ segment.test_point.name }} · {% if segment.status == 'up' %}正常{% elif segment.status == 'changed' %}正常，IP 变化{% elif segment.status == 'down' %}异常{% else %}暂无数据{% endif %}{% if segment.snapshot %} · {{ segment.snapshot.checked_at|date:'H:i' }} · IP {{ segment.snapshot.proxy_ip|default:'无' }} · {{ segment.snapshot.latency_ms|default_if_none:'-' }} ms{% if segment.snapshot.message %} · {{ segment.snapshot.message }}{% endif %}{% endif %}"></div>
+            {% empty %}<div class="h-2 rounded-[1px] bg-slate-300" title="未配置测试点"></div>{% endfor %}
             </div>
-            {% endfor %}
+          {% endfor %}
           </div>
         </div>
-        <div class="min-w-44 text-xs text-slate-500">
-          <div>最近检查 <span class="font-medium text-slate-800">{{ node.latest_snapshot.checked_at|date:"m-d H:i:s"|default:"尚未检查" }}</span></div>
-          <div class="mt-1">最近 IP <span class="font-mono font-semibold text-slate-800">{{ node.latest_snapshot.proxy_ip|default:"—" }}</span></div>
-        </div>
-        <div class="flex gap-3">
-          <a class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium" href="{% url 'node-edit' node.pk %}">编辑</a>
-          <form method="post" action="{% url 'check-now' 'xray' node.pk %}">{% csrf_token %}<button class="rounded-lg border border-cyan-300 bg-white px-3 py-2 text-sm font-medium text-cyan-700">立即检查</button></form>
-        </div>
+        <div class="min-w-48 text-xs text-slate-500">{% for result in node.latest_results %}<div><span class="font-medium text-slate-800">{{ result.test_point.name }}</span> · {% if result.success %}<span class="text-emerald-700">正常</span>{% else %}<span class="text-red-700">异常</span>{% endif %} · {{ result.proxy_ip|default:"—" }} · {{ result.checked_at|date:"H:i" }}</div>{% empty %}<div>尚无客户端报告</div>{% endfor %}</div>
+        <div class="flex gap-2"><a class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium" href="{% url 'node-edit' node.pk %}">编辑</a><form method="post" action="{% url 'check-now' node.pk %}">{% csrf_token %}<button class="rounded-lg border border-cyan-300 bg-white px-3 py-2 text-sm font-medium text-cyan-700">全部测试点立即检查</button></form></div>
       </div>
     </div>
     {% empty %}<p class="text-slate-500">尚未同步节点</p>{% endfor %}

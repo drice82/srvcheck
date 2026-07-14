@@ -1,0 +1,18 @@
+services:
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    image: srvcheck-client:latest
+    restart: unless-stopped
+    environment:
+      SERVER_URL: ${SERVER_URL:-}
+      CLIENT_NAME: ${CLIENT_NAME:-}
+      CLIENT_API_TOKEN: ${CLIENT_API_TOKEN:-}
+      XRAY_CONCURRENCY: ${XRAY_CONCURRENCY:-4}
+      XRAY_IP_CHECK_URL: ${XRAY_IP_CHECK_URL:-https://api.ipify.org?format=json}
+    volumes:
+      - srvcheck-client-data:/app/data
+
+volumes:
+  srvcheck-client-data:

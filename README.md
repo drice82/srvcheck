@@ -1,42 +1,60 @@
 # SrvCheck
 
-单用户服务监控站，支持 TCP、HTTPS、Xray 订阅节点检查，并在状态改变时通过 Bark 通知。
+面向多测试点的 Xray 订阅节点监控。服务端同步订阅并汇总状态，Docker 客户端从不同网络位置执行真实 Xray 代理探测。
 
-## 启动
+## 架构
+
+- `web`：Django、Gunicorn、HTMX 管理界面和客户端 API。
+- `scheduler`：订阅同步、报告过期聚合、历史清理和 Bark 通知。
+- `client`：独立 Docker 镜像，包含 Xray-core；缓存节点、执行检查并回报状态。
+
+服务端不执行节点测试，也不再提供 TCP/HTTPS 监控。多个已启用测试点存在时，同一节点至少两个测试点报告异常才判定故障；只有一个测试点时直接采用该测试点结果。
+
+## 服务端部署
 
 ```bash
 cp .env.example .env
-# 编辑 .env，至少修改 SECRET_KEY、管理员密码和 ALLOWED_HOSTS
+# 修改 SECRET_KEY、管理员密码、ALLOWED_HOSTS 和 CLIENT_API_TOKEN
 docker compose up --build -d
 docker compose ps
 ```
 
-访问 `http://服务器地址:8000`，使用 `.env` 中配置的管理员账户登录。
+登录管理界面后：
 
-## 架构
+1. 添加 Xray 订阅并同步节点。
+2. 在“测试点”中预先登记每个客户端名称，例如“深圳测试点”。
+3. 配置 Bark 通知。
 
-- `web`：Django、Gunicorn、HTMX 管理界面
-- `scheduler`：独立定时检查进程，同时包含 Xray-core
-- 两个容器共享 SQLite 数据卷；只允许启动一个 scheduler
+节点可以在订阅页面临时编辑。保存后服务端会立即向全部启用测试点下发检查任务；下一次订阅同步会使用订阅内容覆盖临时编辑。
 
-## 支持范围
+客户端 API 会返回完整节点分享链接，生产环境必须通过 HTTPS 暴露服务端。
 
-- TCP：连接状态及耗时
-- HTTPS：状态码、TLS 验证、重定向和响应关键词
-- Xray：解析 VMess、VLESS、Trojan、Shadowsocks 订阅；VMess/VLESS/Trojan 执行真实代理探测
-- Xray 出口 IP 使用分层状态快照：状态柱展示此前 7 个完整自然日和最近 24 小时，悬停可查看 IP 或异常状态
-- Bark：故障和恢复状态改变通知；每天 8:00 与 20:00 发送整体监控概况（可在通知设置中开关）。多服务器部署时，请在每台服务器的通知设置中填写不同的“服务器标识”，该标识会显示在所有 Bark 通知标题前。
+## 客户端部署
 
-当前 Shadowsocks 节点可以被同步和展示，但复杂加密参数的真实代理探测将在后续版本完善。
-
-## 运维
+在每个测试点复制仓库中的 `compose.client.yaml` 和客户端环境配置：
 
 ```bash
-docker compose logs -f web scheduler
-docker compose restart scheduler
-docker compose down
+cp .env.client.example .env
+# SERVER_URL 指向服务端；CLIENT_NAME 必须与网页中登记的名称完全一致
+docker compose -f compose.client.yaml up --build -d
+docker compose -f compose.client.yaml logs -f client
 ```
 
-数据库位于 Docker volume `srvcheck-data`。正式升级前请先备份该卷中的 `db.sqlite3`。
+客户端每 60 秒使用 ETag 检查节点清单，测试间隔和超时由订阅配置下发。服务端断联时客户端继续使用持久化缓存测试，每个节点仅保留最新待上报周期结果；连接恢复后自动补报。
 
-小时快照保留当前小时及此前 23 小时；日快照保留今天和此前 7 个完整自然日。调度器每小时自动清理，避免为每次节点检查重复保存出口 IP。
+## API
+
+客户端使用以下请求头：
+
+```text
+Authorization: Bearer <CLIENT_API_TOKEN>
+X-Client-Name: <UTF-8 百分号编码后的测试点名称>
+```
+
+- `GET /api/v1/client/manifest`：节点清单，支持 ETag。
+- `GET /api/v1/client/tasks`：待执行的手动检查任务。
+- `POST /api/v1/client/results`：幂等批量结果上报。
+
+## 升级说明
+
+本版本迁移会删除 TCP/HTTPS 配置与历史，也会清空旧服务端产生的 Xray 测试历史。Xray 订阅和节点配置会保留，节点聚合状态重置为未知，等待客户端首次报告。

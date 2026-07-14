@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-6 flex items-center justify-between"><div><h1 class="text-3xl font-bold">测试点</h1><p class="mt-1 text-sm text-slate-500">客户端名称必须与这里登记的名称完全一致。</p></div><a class="rounded-lg bg-cyan-600 px-4 py-2 text-white" href="{% url 'test-point-new' %}">添加测试点</a></div>
+<div class="overflow-hidden rounded-xl bg-white shadow-sm"><table class="w-full text-left"><thead class="bg-slate-50 text-sm text-slate-500"><tr><th class="p-4">名称</th><th>状态</th><th>最近在线</th><th class="text-right pr-4">操作</th></tr></thead><tbody>
+{% for object in objects %}<tr class="border-t"><td class="p-4 font-semibold">{{ object.name }}</td><td>{% if object.enabled %}<span class="text-emerald-700">● 启用</span>{% else %}<span class="text-slate-500">● 停用</span>{% endif %}</td><td>{{ object.last_seen_at|date:"Y-m-d H:i:s"|default:"从未在线" }}</td><td class="space-x-3 pr-4 text-right"><a href="{% url 'test-point-edit' object.pk %}">编辑</a><form class="inline" method="post" action="{% url 'test-point-delete' object.pk %}">{% csrf_token %}<button class="text-red-600">删除</button></form></td></tr>{% empty %}<tr><td colspan="4" class="p-8 text-center text-slate-500">尚未添加测试点</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}
