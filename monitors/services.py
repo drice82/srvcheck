@@ -191,6 +191,7 @@ def aggregate_node(node_id, now=None):
     now = now or timezone.now()
     with transaction.atomic():
         node = XrayNode.objects.select_for_update().select_related("subscription").get(pk=node_id)
+        enabled_points = []
         if not node.enabled or not node.active_in_subscription or not node.subscription.enabled:
             new_status = XrayNode.Status.DISABLED
             latest = {}
@@ -220,12 +221,16 @@ def aggregate_node(node_id, now=None):
         if new_status != old_status:
             node.last_changed_at = now
         action = None
+        all_points_down = bool(enabled_points) and len(latest) == len(enabled_points) and all(
+            not result.success for result in latest.values()
+        )
+        recovered_points = sum(result.success for result in latest.values())
         if new_status == XrayNode.Status.DISABLED:
             node.incident_open = False
-        elif new_status == XrayNode.Status.DOWN and not node.incident_open:
+        elif all_points_down and not node.incident_open:
             node.incident_open = True
             action = "down"
-        elif new_status == XrayNode.Status.UP and node.incident_open:
+        elif recovered_points >= 2 and node.incident_open:
             node.incident_open = False
             action = "up"
         node.save(update_fields=["status", "incident_open", "last_checked_at", "last_changed_at", "updated_at"])
@@ -256,7 +261,7 @@ def notify_status_change(node, action, latest):
     if not setting.enabled or not setting.bark_url:
         return
     recovering = action == "up"
-    status_icon = "✅" if recovering else "🚨"
+    status_icon = "✅" if recovering else "❌"
     title = _notification_title(
         setting, f"{status_icon} {node.name} {'恢复正常' if recovering else '发生故障'}"
     )
@@ -266,7 +271,8 @@ def notify_status_change(node, action, latest):
         f"状态: {status_icon} {'正常' if recovering else '异常/故障'}",
     ]
     for result in sorted(latest.values(), key=lambda value: value.test_point.name):
-        lines.append(f"{result.test_point.name}: {'正常' if result.success else '异常'}")
+        result_icon = "✅" if result.success else "❌"
+        lines.append(f"{result.test_point.name}: {result_icon} {'正常' if result.success else '异常'}")
     body = "\n".join(lines)
     success, error = False, ""
     try:

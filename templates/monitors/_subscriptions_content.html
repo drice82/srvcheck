@@ -1,6 +1,4 @@
-{% extends "base.html" %}
-{% block content %}
-<div class="mb-6 flex justify-between"><h1 class="text-3xl font-bold">Xray 订阅</h1><a class="rounded-lg bg-cyan-600 px-4 py-2 text-white" href="{% url 'subscription-new' %}">添加订阅</a></div>
+<div class="mb-6 flex justify-between"><h2 class="text-2xl font-bold">Xray 订阅</h2><a class="rounded-lg bg-cyan-600 px-4 py-2 text-white" href="{% url 'subscription-new' %}">添加订阅</a></div>
 <div class="mb-5 flex flex-wrap gap-3 text-xs text-slate-600">
   {% for point in test_points %}<span class="rounded-full border bg-white px-3 py-1">{{ forloop.counter }} · {{ point.name }}</span>{% empty %}<span class="text-amber-700">请先添加测试点</span>{% endfor %}
 </div>
@@ -33,4 +31,3 @@
   </div>
 </section>
 {% empty %}<p>没有订阅</p>{% endfor %}
-{% endblock %}

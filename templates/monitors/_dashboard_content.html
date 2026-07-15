@@ -7,15 +7,4 @@
   </div>
   {% endfor %}
 </div>
-<div class="mt-8 overflow-hidden rounded-xl bg-white shadow-sm">
-  <h2 class="border-b p-5 text-lg font-semibold">测试点</h2>
-  <div class="grid gap-3 p-5 sm:grid-cols-2 lg:grid-cols-3">
-    {% for point in test_points %}<div class="rounded-lg border p-3"><span class="font-semibold">{{ point.name }}</span><span class="ml-2 text-xs {% if point.enabled %}text-emerald-700{% else %}text-slate-500{% endif %}">{% if point.enabled %}启用{% else %}停用{% endif %}</span><div class="mt-1 text-sm text-slate-500">最近在线 {{ point.last_seen_at|date:"m-d H:i:s"|default:"从未" }}</div></div>{% empty %}<p class="text-slate-500">尚未配置测试点</p>{% endfor %}
-  </div>
-</div>
-<div class="mt-8 overflow-hidden rounded-xl bg-white shadow-sm">
-  <h2 class="border-b p-5 text-lg font-semibold">当前节点</h2>
-  <table class="w-full text-left"><thead class="bg-slate-50 text-sm text-slate-500"><tr><th class="p-4">名称</th><th>类型</th><th>地址</th><th>聚合状态</th><th>最近报告</th></tr></thead><tbody>
-  {% for object in nodes %}<tr class="border-t {% if object.status == 'down' %}bg-red-50{% endif %}"><td class="p-4 font-medium">{{ object.name }}</td><td><span class="rounded bg-slate-800 px-2 py-1 text-xs font-bold text-white">{{ object.monitor_type_label }}</span></td><td>{{ object.server_address }}</td><td>{% include "monitors/_status_badge.html" %}</td><td>{{ object.last_checked_at|date:"m-d H:i:s"|default:"-" }}</td></tr>{% empty %}<tr><td colspan="5" class="p-8 text-center text-slate-500">尚未同步节点</td></tr>{% endfor %}
-  </tbody></table>
-</div>
+<div class="mt-8">{% include "monitors/_subscriptions_content.html" %}</div>

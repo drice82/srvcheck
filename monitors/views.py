@@ -25,21 +25,6 @@ def dashboard(request):
 
 
 def dashboard_context():
-    nodes = list(XrayNode.objects.filter(active_in_subscription=True).select_related("subscription"))
-    return {
-        "nodes": nodes,
-        "test_points": TestPoint.objects.all(),
-        "counts": {key: sum(node.status == key for node in nodes) for key in ["up", "down", "unknown", "disabled"]},
-    }
-
-
-@login_required
-def dashboard_partial(request):
-    return render(request, "monitors/_dashboard_content.html", dashboard_context())
-
-
-@login_required
-def subscription_list(request):
     subscriptions = list(
         XraySubscription.objects.prefetch_related(
             Prefetch(
@@ -51,11 +36,22 @@ def subscription_list(request):
     )
     nodes = [node for subscription in subscriptions for node in subscription.active_nodes]
     prepare_xray_status_bars(nodes, timezone.now())
-    return render(
-        request,
-        "monitors/subscriptions.html",
-        {"objects": subscriptions, "test_points": list(TestPoint.objects.filter(enabled=True))},
-    )
+    return {
+        "nodes": nodes,
+        "objects": subscriptions,
+        "test_points": list(TestPoint.objects.filter(enabled=True)),
+        "counts": {key: sum(node.status == key for node in nodes) for key in ["up", "down", "unknown", "disabled"]},
+    }
+
+
+@login_required
+def dashboard_partial(request):
+    return render(request, "monitors/_dashboard_content.html", dashboard_context())
+
+
+@login_required
+def subscription_list(request):
+    return redirect("dashboard")
 
 
 def prepare_xray_status_bars(nodes, now):
@@ -143,7 +139,7 @@ def subscription_form(request, pk=None):
         saved.next_sync_at = timezone.now()
         saved.save(update_fields=["next_sync_at"])
         aggregate_all_nodes()
-        return redirect("subscriptions")
+        return redirect("dashboard")
     return render(request, "monitors/form.html", {"form": form, "title": "Xray 订阅", "kind": "xray"})
 
 
@@ -152,7 +148,7 @@ def subscription_delete(request, pk):
     obj = get_object_or_404(XraySubscription, pk=pk)
     if request.method == "POST":
         obj.delete()
-    return redirect("subscriptions")
+    return redirect("dashboard")
 
 
 @login_required
@@ -162,7 +158,7 @@ def subscription_sync(request, pk):
         nodes, error = asyncio.run(synchronize_subscription(obj))
         save_subscription_result(obj, nodes, error)
         messages.success(request, "同步完成" if not error else f"同步失败：{error}")
-    return redirect("subscriptions")
+    return redirect("dashboard")
 
 
 @login_required
@@ -173,7 +169,7 @@ def check_now(request, pk):
     task = create_manual_check(node)
     count = task.assignments.count()
     messages.success(request, f"已向 {count} 个测试点下发检查任务")
-    return redirect(request.META.get("HTTP_REFERER") or "subscriptions")
+    return redirect(request.META.get("HTTP_REFERER") or "dashboard")
 
 
 @login_required
@@ -196,7 +192,7 @@ def node_form(request, pk):
         ClientResult.objects.filter(node=saved).delete()
         task = create_manual_check(saved)
         messages.success(request, f"节点已保存，并已向 {task.assignments.count()} 个测试点下发检查任务")
-        return redirect("subscriptions")
+        return redirect("dashboard")
     return render(request, "monitors/form.html", {"form": form, "title": f"编辑节点：{node.name}", "kind": "xray"})
 
 

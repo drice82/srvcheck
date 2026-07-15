@@ -186,8 +186,9 @@ class AggregationTests(BaseNodeTest):
         self.assertTrue(self.node.incident_open)
         self.assertEqual(NotificationLog.objects.count(), 1)
         notification = NotificationLog.objects.get()
-        self.assertIn("🚨", notification.title)
-        self.assertIn("状态: 🚨 异常/故障", notification.body)
+        self.assertIn("❌", notification.title)
+        self.assertIn("状态: ❌ 异常/故障", notification.body)
+        self.assertIn("深圳: ❌ 异常", notification.body)
 
     def test_two_failures_required_with_multiple_clients(self):
         a = TestPoint.objects.create(name="深圳")
@@ -198,6 +199,27 @@ class AggregationTests(BaseNodeTest):
         self.assertEqual(aggregate_node(self.node.pk), "up")
         self.result(c, False)
         self.assertEqual(aggregate_node(self.node.pk), "down")
+
+    @patch("monitors.services._send_bark")
+    def test_failure_notification_requires_every_enabled_point_to_be_down(self, send_bark):
+        a = TestPoint.objects.create(name="深圳")
+        b = TestPoint.objects.create(name="上海")
+        c = TestPoint.objects.create(name="北京")
+        setting = NotificationSetting.get_solo()
+        setting.enabled, setting.bark_url = True, "https://api.day.app/key"
+        setting.save()
+        self.result(a, False)
+        self.result(b, False)
+        self.result(c, True)
+        self.assertEqual(aggregate_node(self.node.pk), "down")
+        self.node.refresh_from_db()
+        self.assertFalse(self.node.incident_open)
+        self.assertFalse(NotificationLog.objects.exists())
+        self.result(c, False)
+        aggregate_node(self.node.pk)
+        self.node.refresh_from_db()
+        self.assertTrue(self.node.incident_open)
+        self.assertEqual(NotificationLog.objects.count(), 1)
 
     def test_insufficient_fresh_reports_is_unknown(self):
         a = TestPoint.objects.create(name="深圳")
@@ -217,16 +239,20 @@ class AggregationTests(BaseNodeTest):
     def test_unknown_does_not_close_incident_and_recovery_notifies_once(self, send_bark):
         a = TestPoint.objects.create(name="深圳")
         b = TestPoint.objects.create(name="上海")
+        c = TestPoint.objects.create(name="北京")
         setting = NotificationSetting.get_solo()
         setting.enabled, setting.bark_url = True, "https://api.day.app/key"
         setting.save()
         self.result(a, False)
         self.result(b, False)
+        self.result(c, False)
         aggregate_node(self.node.pk)
         b.enabled = False
         b.save()
         a.enabled = False
         a.save()
+        c.enabled = False
+        c.save()
         aggregate_node(self.node.pk)
         self.node.refresh_from_db()
         self.assertTrue(self.node.incident_open)
@@ -235,11 +261,21 @@ class AggregationTests(BaseNodeTest):
         self.result(a, True)
         aggregate_node(self.node.pk)
         self.node.refresh_from_db()
+        self.assertTrue(self.node.incident_open)
+        self.assertEqual(NotificationLog.objects.count(), 1)
+        b.enabled = True
+        b.save()
+        self.result(b, True)
+        aggregate_node(self.node.pk)
+        self.node.refresh_from_db()
         self.assertFalse(self.node.incident_open)
         self.assertEqual(NotificationLog.objects.count(), 2)
         titles = list(NotificationLog.objects.values_list("title", flat=True))
-        self.assertTrue(any("🚨" in title for title in titles))
+        self.assertTrue(any("❌" in title for title in titles))
         self.assertTrue(any("✅" in title for title in titles))
+        recovery = NotificationLog.objects.filter(title__contains="恢复正常").get()
+        self.assertIn("上海: ✅ 正常", recovery.body)
+        self.assertIn("深圳: ✅ 正常", recovery.body)
 
 
 class SnapshotAndViewTests(BaseNodeTest):
@@ -304,8 +340,14 @@ class PageTests(BaseNodeTest):
         self.client.force_login(self.user)
         response = self.client.get("/")
         self.assertContains(response, "Xray 服务总览")
+        self.assertContains(response, "Xray 订阅")
+        self.assertContains(response, "全部测试点立即检查")
         self.assertNotContains(response, ">TCP<")
         self.assertNotContains(response, ">HTTPS<")
+
+    def test_legacy_subscription_page_redirects_to_dashboard(self):
+        self.client.force_login(self.user)
+        self.assertRedirects(self.client.get("/subscriptions/"), "/")
 
     def test_editing_node_keeps_subscription_identity_and_dispatches_to_all_points(self):
         TestPoint.objects.create(name="深圳")
@@ -320,7 +362,7 @@ class PageTests(BaseNodeTest):
             f"/nodes/{self.node.pk}/edit/",
             {"name": "临时节点", "share_link": "trojan://password@edited.example.com:443#Temporary"},
         )
-        self.assertRedirects(response, "/subscriptions/")
+        self.assertRedirects(response, "/")
         self.node.refresh_from_db()
         self.assertEqual(self.node.name, "临时节点")
         self.assertEqual(self.node.protocol, "trojan")
@@ -346,6 +388,6 @@ class PageTests(BaseNodeTest):
             proxy_ip="203.0.113.9", result_id=uuid.uuid4(),
         )
         self.client.force_login(self.user)
-        response = self.client.get("/subscriptions/")
+        response = self.client.get("/")
         self.assertContains(response, timezone.localtime(checked_at).strftime("%H:%M"))
         self.assertContains(response, "203.0.113.9")
