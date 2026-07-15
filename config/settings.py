@@ -28,7 +28,21 @@ TEMPLATES = [{
     ]},
 }]
 WSGI_APPLICATION = "config.wsgi.application"
-DATABASES = {"default": {"ENGINE": "django.db.backends.sqlite3", "NAME": os.getenv("DATABASE_PATH", BASE_DIR / "data/db.sqlite3"), "OPTIONS": {"timeout": 20}}}
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": os.getenv("DATABASE_PATH", BASE_DIR / "data/db.sqlite3"),
+        "OPTIONS": {
+            "timeout": 20,
+            "transaction_mode": "IMMEDIATE",
+            "init_command": (
+                "PRAGMA journal_mode=WAL;"
+                " PRAGMA synchronous=NORMAL;"
+                " PRAGMA busy_timeout=20000"
+            ),
+        },
+    }
+}
 AUTH_PASSWORD_VALIDATORS = []
 LANGUAGE_CODE = "zh-hans"
 TIME_ZONE = os.getenv("TIME_ZONE", "Asia/Shanghai")

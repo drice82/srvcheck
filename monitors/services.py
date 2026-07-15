@@ -215,6 +215,9 @@ def aggregate_node(node_id, now=None):
                 new_status = XrayNode.Status.UNKNOWN
 
         old_status = node.status
+        old_incident_open = node.incident_open
+        old_last_checked_at = node.last_checked_at
+        old_last_changed_at = node.last_changed_at
         node.status = new_status
         if latest:
             node.last_checked_at = max(result.received_at for result in latest.values())
@@ -233,7 +236,17 @@ def aggregate_node(node_id, now=None):
         elif recovered_points >= 2 and node.incident_open:
             node.incident_open = False
             action = "up"
-        node.save(update_fields=["status", "incident_open", "last_checked_at", "last_changed_at", "updated_at"])
+        update_fields = []
+        if node.status != old_status:
+            update_fields.append("status")
+        if node.incident_open != old_incident_open:
+            update_fields.append("incident_open")
+        if node.last_checked_at != old_last_checked_at:
+            update_fields.append("last_checked_at")
+        if node.last_changed_at != old_last_changed_at:
+            update_fields.append("last_changed_at")
+        if update_fields:
+            node.save(update_fields=[*update_fields, "updated_at"])
     if action:
         notify_status_change(node, action, latest)
     return new_status

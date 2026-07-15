@@ -36,11 +36,11 @@ class Command(BaseCommand):
     def tick(self):
         monotonic = time.monotonic()
         if monotonic - self.last_cleanup >= 3600:
-            cleanup_history()
             self.last_cleanup = monotonic
+            self.run_periodic("cleanup", cleanup_history)
         if monotonic - self.last_aggregate >= 30:
-            aggregate_all_nodes()
             self.last_aggregate = monotonic
+            self.run_periodic("aggregate", aggregate_all_nodes)
         now = timezone.now()
         subscriptions = XraySubscription.objects.filter(enabled=True).filter(next_sync_at__isnull=True) | XraySubscription.objects.filter(enabled=True, next_sync_at__lte=now)
         for subscription in subscriptions[:5]:
@@ -53,3 +53,9 @@ class Command(BaseCommand):
                     f"{type(exc).__name__}: {exc}"
                 )
         maybe_send_summary()
+
+    def run_periodic(self, name, callback):
+        try:
+            callback()
+        except Exception as exc:
+            self.stderr.write(f"scheduler {name} failed: {type(exc).__name__}: {exc}")

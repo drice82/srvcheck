@@ -2,13 +2,17 @@ import base64
 import json
 import uuid
 from datetime import timedelta
+from io import StringIO
 from unittest.mock import AsyncMock, Mock, patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import OperationalError
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from .checkers import Outcome, decode_subscription, parse_proxy_ip, xray_config_from_link
+from .management.commands.run_scheduler import Command as SchedulerCommand
 from .models import (
     ClientResult,
     ManualCheckAssignment,
@@ -174,6 +178,11 @@ class ClientApiTests(BaseNodeTest):
 
 
 class AggregationTests(BaseNodeTest):
+    def test_unchanged_status_does_not_write_node(self):
+        with patch.object(XrayNode, "save", autospec=True) as save:
+            self.assertEqual(aggregate_node(self.node.pk), "unknown")
+        save.assert_not_called()
+
     @patch("monitors.services._send_bark")
     def test_single_client_uses_direct_result(self, send_bark):
         point = TestPoint.objects.create(name="深圳")
@@ -328,6 +337,43 @@ class SnapshotAndViewTests(BaseNodeTest):
         self.assertTrue(XrayNodeSnapshot.objects.exists())
 
 
+class SchedulerTests(TestCase):
+    @patch("monitors.management.commands.run_scheduler.maybe_send_summary")
+    @patch("monitors.management.commands.run_scheduler.aggregate_all_nodes")
+    @patch("monitors.management.commands.run_scheduler.time.monotonic")
+    def test_locked_aggregate_does_not_block_tick_or_retry_immediately(
+        self, monotonic, aggregate_all, maybe_summary
+    ):
+        command = SchedulerCommand()
+        command.stderr = StringIO()
+        command.last_cleanup = 100
+        command.last_aggregate = 0
+        monotonic.return_value = 100
+        aggregate_all.side_effect = OperationalError("database is locked")
+
+        command.tick()
+        monotonic.return_value = 102
+        command.tick()
+
+        self.assertEqual(command.last_aggregate, 100)
+        aggregate_all.assert_called_once_with()
+        self.assertEqual(maybe_summary.call_count, 2)
+        self.assertIn(
+            "scheduler aggregate failed: OperationalError: database is locked",
+            command.stderr.getvalue(),
+        )
+
+
+class SqliteConfigurationTests(TestCase):
+    def test_write_concurrency_options_are_enabled(self):
+        options = settings.DATABASES["default"]["OPTIONS"]
+        self.assertEqual(options["timeout"], 20)
+        self.assertEqual(options["transaction_mode"], "IMMEDIATE")
+        self.assertIn("PRAGMA journal_mode=WAL", options["init_command"])
+        self.assertIn("PRAGMA synchronous=NORMAL", options["init_command"])
+        self.assertIn("PRAGMA busy_timeout=20000", options["init_command"])
+
+
 class PageTests(BaseNodeTest):
     def setUp(self):
         super().setUp()
@@ -341,7 +387,8 @@ class PageTests(BaseNodeTest):
         response = self.client.get("/")
         self.assertContains(response, "Xray 服务总览")
         self.assertContains(response, "Xray 订阅")
-        self.assertContains(response, "全部测试点立即检查")
+        self.assertContains(response, ">测试</button>")
+        self.assertNotContains(response, "全部测试点立即检查")
         self.assertNotContains(response, ">TCP<")
         self.assertNotContains(response, ">HTTPS<")
 
