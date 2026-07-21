@@ -2,10 +2,13 @@ from django.contrib import admin
 
 from .models import (
     ClientResult,
+    HTTPSMonitor,
     ManualCheckAssignment,
     ManualCheckTask,
+    MonitorSnapshot,
     NotificationLog,
     NotificationSetting,
+    TCPMonitor,
     TestPoint,
     XrayNode,
     XrayNodeSnapshot,
@@ -13,6 +16,7 @@ from .models import (
 )
 
 admin.site.register([
-    XraySubscription, XrayNode, TestPoint, ClientResult, XrayNodeSnapshot,
-    ManualCheckTask, ManualCheckAssignment, NotificationSetting, NotificationLog,
+    XraySubscription, XrayNode, TCPMonitor, HTTPSMonitor, TestPoint, ClientResult,
+    XrayNodeSnapshot, MonitorSnapshot, ManualCheckTask, ManualCheckAssignment,
+    NotificationSetting, NotificationLog,
 ])

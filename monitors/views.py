@@ -9,9 +9,26 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import NotificationSettingForm, TestPointForm, XrayNodeForm, XraySubscriptionForm
-from .models import ClientResult, NotificationSetting, TestPoint, XrayNode, XrayNodeSnapshot, XraySubscription
+from .forms import (
+    HTTPSMonitorForm,
+    NotificationSettingForm,
+    TCPMonitorForm,
+    TestPointForm,
+    XrayNodeForm,
+    XraySubscriptionForm,
+)
+from .models import (
+    ClientResult,
+    MonitorSnapshot,
+    NotificationSetting,
+    TestPoint,
+    XrayNode,
+    XrayNodeSnapshot,
+    XraySubscription,
+    target_model_for_kind,
+)
 from .services import (
+    aggregate_all,
     aggregate_all_nodes,
     create_manual_check,
     save_subscription_result,
@@ -55,8 +72,12 @@ def subscription_list(request):
 
 
 def prepare_xray_status_bars(nodes, now):
+    prepare_status_bars(nodes, now, "xray")
+
+
+def prepare_status_bars(targets, now, kind):
     points = list(TestPoint.objects.filter(enabled=True))
-    node_ids = [node.pk for node in nodes]
+    target_ids = [target.pk for target in targets]
     current_hour = now.replace(minute=0, second=0, microsecond=0)
     # The rightmost column is reserved for the live/latest result. The hourly
     # columns therefore end at the previous completed hour.
@@ -64,29 +85,43 @@ def prepare_xray_status_bars(nodes, now):
     today = timezone.localdate(now)
     daily_dates = [today - timedelta(days=offset) for offset in range(7, 0, -1)]
     cutoff = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
-    snapshots = XrayNodeSnapshot.objects.filter(node_id__in=node_ids, bucket_start__gte=cutoff).select_related("test_point")
+    if kind == "xray":
+        snapshots = XrayNodeSnapshot.objects.filter(
+            node_id__in=target_ids, bucket_start__gte=cutoff
+        ).select_related("test_point")
+        target_key = lambda snapshot: snapshot.node_id
+        recent = ClientResult.objects.filter(node_id__in=target_ids).select_related("test_point").order_by("node_id", "test_point_id", "-received_at")
+        result_key = lambda result: result.node_id
+    else:
+        fk = f"{kind}_monitor"
+        snapshots = MonitorSnapshot.objects.filter(
+            **{f"{fk}_id__in": target_ids}, bucket_start__gte=cutoff
+        ).select_related("test_point")
+        target_key = lambda snapshot: getattr(snapshot, f"{fk}_id")
+        recent = ClientResult.objects.filter(**{f"{fk}_id__in": target_ids}).select_related("test_point").order_by(f"{fk}_id", "test_point_id", "-received_at")
+        result_key = lambda result: getattr(result, f"{fk}_id")
     hourly, daily = {}, {}
     for snapshot in snapshots:
         if snapshot.kind == XrayNodeSnapshot.Kind.HOURLY:
-            hourly[(snapshot.node_id, snapshot.test_point_id, snapshot.bucket_start)] = snapshot
+            hourly[(target_key(snapshot), snapshot.test_point_id, snapshot.bucket_start)] = snapshot
         else:
-            daily[(snapshot.node_id, snapshot.test_point_id, timezone.localtime(snapshot.bucket_start).date())] = snapshot
+            daily[(target_key(snapshot), snapshot.test_point_id, timezone.localtime(snapshot.bucket_start).date())] = snapshot
 
-    recent = ClientResult.objects.filter(node_id__in=node_ids).select_related("test_point").order_by("node_id", "test_point_id", "-received_at")
     latest = {}
     for result in recent:
-        latest.setdefault((result.node_id, result.test_point_id), result)
+        latest.setdefault((result_key(result), result.test_point_id), result)
 
-    for node in nodes:
-        daily_bars = [make_bucket(node.pk, points, daily, day, day.strftime("%Y-%m-%d"), "daily") for day in daily_dates]
+    for target in targets:
+        daily_bars = [make_bucket(target.pk, points, daily, day, day.strftime("%Y-%m-%d"), "daily") for day in daily_dates]
         hourly_bars = [
-            make_bucket(node.pk, points, hourly, start, timezone.localtime(start).strftime("%m-%d %H:00"), "hourly")
+            make_bucket(target.pk, points, hourly, start, timezone.localtime(start).strftime("%m-%d %H:00"), "hourly")
             for start in hourly_starts
         ]
-        latest_bar = make_latest_bucket(node.pk, points, latest)
-        node.status_bars = daily_bars + hourly_bars + [latest_bar]
-        mark_ip_changes(node.status_bars, points)
-        node.latest_results = [latest[(node.pk, point.pk)] for point in points if (node.pk, point.pk) in latest]
+        latest_bar = make_latest_bucket(target.pk, points, latest)
+        target.status_bars = daily_bars + hourly_bars + [latest_bar]
+        if kind == "xray":
+            mark_ip_changes(target.status_bars, points)
+        target.latest_results = [latest[(target.pk, point.pk)] for point in points if (target.pk, point.pk) in latest]
 
 
 def make_bucket(node_id, points, source, bucket, label, kind):
@@ -196,6 +231,82 @@ def node_form(request, pk):
     return render(request, "monitors/form.html", {"form": form, "title": f"编辑节点：{node.name}", "kind": "xray"})
 
 
+MONITOR_PAGE_META = {
+    "tcp": {"title": "TCP 监控", "form": TCPMonitorForm},
+    "https": {"title": "HTTPS 监控", "form": HTTPSMonitorForm},
+}
+
+
+def monitor_page_context(kind):
+    model = target_model_for_kind(kind)
+    objects = list(model.objects.all())
+    prepare_status_bars(objects, timezone.now(), kind)
+    return {
+        "kind": kind,
+        "objects": objects,
+        "test_points": list(TestPoint.objects.filter(enabled=True)),
+        "counts": {key: sum(obj.status == key for obj in objects) for key in ["up", "down", "unknown", "disabled"]},
+        "page_title": MONITOR_PAGE_META[kind]["title"],
+        "new_url": f"{kind}-new",
+        "edit_url": f"{kind}-edit",
+        "delete_url": f"{kind}-delete",
+        "check_url": f"{kind}-check",
+        "partial_url": f"{kind}-partial",
+    }
+
+
+@login_required
+def monitor_page(request, kind):
+    return render(request, "monitors/monitor_page.html", monitor_page_context(kind))
+
+
+@login_required
+def monitor_partial(request, kind):
+    return render(request, "monitors/_monitor_content.html", monitor_page_context(kind))
+
+
+@login_required
+def monitor_form(request, kind, pk=None):
+    model = target_model_for_kind(kind)
+    obj = get_object_or_404(model, pk=pk) if pk else None
+    form = MONITOR_PAGE_META[kind]["form"](request.POST or None, instance=obj)
+    if request.method == "POST" and form.is_valid():
+        saved = form.save(commit=False)
+        if obj:
+            # Same rule as node edits: previous raw results must not take part
+            # in consensus for the changed endpoint, buckets stay visible.
+            saved.status = model.Status.UNKNOWN
+            saved.incident_open = False
+            saved.last_checked_at = None
+            saved.last_changed_at = timezone.now()
+        saved.save()
+        if obj:
+            ClientResult.objects.filter(**{f"{kind}_monitor": saved}).delete()
+        task = create_manual_check(saved)
+        messages.success(request, f"监控已保存，并已向 {task.assignments.count()} 个测试点下发检查任务")
+        return redirect(f"{kind}-monitors")
+    title = MONITOR_PAGE_META[kind]["title"]
+    return render(request, "monitors/form.html", {"form": form, "title": title, "kind": kind})
+
+
+@login_required
+def monitor_delete(request, kind, pk):
+    obj = get_object_or_404(target_model_for_kind(kind), pk=pk)
+    if request.method == "POST":
+        obj.delete()
+    return redirect(f"{kind}-monitors")
+
+
+@login_required
+def monitor_check_now(request, kind, pk):
+    if request.method != "POST":
+        return HttpResponse(status=405)
+    monitor = get_object_or_404(target_model_for_kind(kind), pk=pk, enabled=True)
+    task = create_manual_check(monitor)
+    messages.success(request, f"已向 {task.assignments.count()} 个测试点下发检查任务")
+    return redirect(request.META.get("HTTP_REFERER") or f"{kind}-monitors")
+
+
 @login_required
 def test_point_list(request):
     return render(request, "monitors/test_points.html", {"objects": TestPoint.objects.all()})
@@ -207,7 +318,7 @@ def test_point_form(request, pk=None):
     form = TestPointForm(request.POST or None, instance=obj)
     if request.method == "POST" and form.is_valid():
         form.save()
-        aggregate_all_nodes()
+        aggregate_all()
         messages.success(request, "测试点已保存")
         return redirect("test-points")
     return render(request, "monitors/form.html", {"form": form, "title": "测试点", "kind": "test-point"})
@@ -218,7 +329,7 @@ def test_point_delete(request, pk):
     point = get_object_or_404(TestPoint, pk=pk)
     if request.method == "POST":
         point.delete()
-        aggregate_all_nodes()
+        aggregate_all()
     return redirect("test-points")
 
 

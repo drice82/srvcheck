@@ -1,7 +1,7 @@
 from django import forms
 
 from .checkers import decode_subscription
-from .models import NotificationSetting, TestPoint, XrayNode, XraySubscription
+from .models import HTTPSMonitor, NotificationSetting, TCPMonitor, TestPoint, XrayNode, XraySubscription
 
 
 class StyledForm(forms.ModelForm):
@@ -44,6 +44,29 @@ class XrayNodeForm(StyledForm):
             raise forms.ValidationError("请输入一个有效的 VMess、VLESS、Trojan 或 Shadowsocks 分享链接。")
         self.parsed_node = nodes[0]
         return value
+
+
+class TCPMonitorForm(StyledForm):
+    class Meta:
+        model = TCPMonitor
+        fields = ["name", "host", "port", "check_interval_seconds", "timeout_seconds", "enabled"]
+
+
+class HTTPSMonitorForm(StyledForm):
+    class Meta:
+        model = HTTPSMonitor
+        fields = [
+            "name", "url", "expected_status_min", "expected_status_max", "keyword",
+            "verify_tls", "follow_redirects", "check_interval_seconds", "timeout_seconds", "enabled",
+        ]
+
+    def clean(self):
+        cleaned = super().clean()
+        status_min = cleaned.get("expected_status_min")
+        status_max = cleaned.get("expected_status_max")
+        if status_min is not None and status_max is not None and status_min > status_max:
+            raise forms.ValidationError("最小状态码不能大于最大状态码。")
+        return cleaned
 
 
 class NotificationSettingForm(StyledForm):

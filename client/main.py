@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
-from monitors.checkers import check_xray
+from monitors.checkers import check_https, check_tcp, check_xray
 
 
 class ClientAgent:
@@ -60,6 +60,11 @@ class ClientAgent:
             await asyncio.sleep(60)
             await self.refresh_manifest()
 
+    def iter_targets(self):
+        for kind, key in (("xray", "nodes"), ("tcp", "tcp_monitors"), ("https", "https_monitors")):
+            for item in self.manifest.get(key) or []:
+                yield kind, item
+
     async def refresh_manifest(self, force=False):
         headers = {}
         if self.manifest.get("version") and not force:
@@ -75,9 +80,10 @@ class ClientAgent:
             if payload["version"] != self.manifest.get("version"):
                 self.manifest = payload
                 atomic_json(self.manifest_path, payload)
-                valid_ids = {str(node["id"]) for node in payload["nodes"]}
-                self.next_due = {key: value for key, value in self.next_due.items() if key in valid_ids}
-                print(f"manifest updated: {len(payload['nodes'])} nodes", flush=True)
+                valid_keys = {f"{kind}:{item['id']}" for kind, item in self.iter_targets()}
+                self.next_due = {key: value for key, value in self.next_due.items() if key in valid_keys}
+                counts = [f"{len(self.manifest.get(key) or [])} {kind}" for kind, key in (("xray", "nodes"), ("tcp", "tcp_monitors"), ("https", "https_monitors"))]
+                print(f"manifest updated: {', '.join(counts)}", flush=True)
             return True
         except Exception as exc:
             print(f"manifest refresh failed: {type(exc).__name__}: {exc}", flush=True)
@@ -87,13 +93,13 @@ class ClientAgent:
         while self.running:
             now = asyncio.get_running_loop().time()
             due = []
-            for node in self.manifest.get("nodes", []):
-                key = str(node["id"])
+            for kind, item in self.iter_targets():
+                key = f"{kind}:{item['id']}"
                 if self.next_due.get(key, 0) <= now:
-                    self.next_due[key] = now + max(30, int(node["check_interval_seconds"]))
-                    due.append(node)
+                    self.next_due[key] = now + max(30, int(item["check_interval_seconds"]))
+                    due.append(item)
             if due:
-                await asyncio.gather(*(self.test_node(node) for node in due))
+                await asyncio.gather(*(self.test_target(item) for item in due))
             await asyncio.sleep(1)
 
     async def task_loop(self):
@@ -109,40 +115,64 @@ class ClientAgent:
                     pending_key = f"task:{task['id']}"
                     if pending_key in self.pending:
                         continue
-                    node = next((item for item in self.manifest.get("nodes", []) if item["id"] == task["node_id"]), None)
-                    if node:
-                        await self.test_node(node, task_id=task["id"])
+                    kind = task.get("target_type") or "xray"
+                    target_id = task.get("target_id", task.get("node_id"))
+                    item = next(
+                        (entry for entry_kind, entry in self.iter_targets() if entry_kind == kind and entry["id"] == target_id),
+                        None,
+                    )
+                    if item:
+                        await self.test_target(item, task_id=task["id"])
             except Exception as exc:
                 print(f"task poll failed: {type(exc).__name__}: {exc}", flush=True)
             await asyncio.sleep(5)
 
-    async def test_node(self, node, task_id=None):
+    async def test_target(self, target, task_id=None):
+        kind = target.get("kind", "xray")
         async with self.semaphore:
             checked_at = datetime.now(timezone.utc).isoformat()
-            probe_node = SimpleNamespace(
-                share_link=node["share_link"], timeout_seconds=int(node["timeout_seconds"])
-            )
-            outcome = await check_xray(
-                probe_node,
-                xray_executable=os.getenv("XRAY_EXECUTABLE", "/usr/local/bin/xray"),
-                ip_check_url=os.getenv("XRAY_IP_CHECK_URL", "https://api.ipify.org?format=json"),
-            )
+            outcome = await self.probe(kind, target)
             result = {
                 "result_id": str(uuid.uuid4()),
-                "node_id": node["id"],
+                "target_type": kind,
+                "target_id": target["id"],
                 "checked_at": checked_at,
                 "success": outcome.success,
                 "latency_ms": outcome.latency_ms,
-                "proxy_ip": outcome.proxy_ip,
                 "message": outcome.message,
             }
-            key = f"node:{node['id']}"
+            if kind == "xray":
+                result["proxy_ip"] = outcome.proxy_ip
+            key = f"{kind}:{target['id']}"
             if task_id:
                 result["task_id"] = task_id
                 key = f"task:{task_id}"
             self.pending[key] = result
             atomic_json(self.pending_path, self.pending)
-            print(f"checked {node['name']}: {'up' if outcome.success else 'down'}", flush=True)
+            print(f"checked {kind} {target['name']}: {'up' if outcome.success else 'down'}", flush=True)
+
+    async def probe(self, kind, target):
+        timeout = int(target["timeout_seconds"])
+        if kind == "tcp":
+            probe_target = SimpleNamespace(host=target["host"], port=int(target["port"]), timeout_seconds=timeout)
+            return await check_tcp(probe_target)
+        if kind == "https":
+            probe_target = SimpleNamespace(
+                url=target["url"],
+                expected_status_min=int(target.get("expected_status_min", 200)),
+                expected_status_max=int(target.get("expected_status_max", 399)),
+                keyword=target.get("keyword") or "",
+                verify_tls=bool(target.get("verify_tls", True)),
+                follow_redirects=bool(target.get("follow_redirects", True)),
+                timeout_seconds=timeout,
+            )
+            return await check_https(probe_target)
+        probe_target = SimpleNamespace(share_link=target["share_link"], timeout_seconds=timeout)
+        return await check_xray(
+            probe_target,
+            xray_executable=os.getenv("XRAY_EXECUTABLE", "/usr/local/bin/xray"),
+            ip_check_url=os.getenv("XRAY_IP_CHECK_URL", "https://api.ipify.org?format=json"),
+        )
 
     async def upload_loop(self):
         while self.running:

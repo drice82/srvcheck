@@ -1,0 +1,8 @@
+<div class="grid gap-4 sm:grid-cols-4">
+  {% for key,value in counts.items %}
+  <div class="rounded-xl border-2 bg-white p-5 shadow-sm {% if key == 'down' %}border-red-300{% elif key == 'up' %}border-emerald-300{% elif key == 'unknown' %}border-amber-300{% else %}border-slate-300{% endif %}">
+    <div class="text-sm font-bold uppercase {% if key == 'down' %}text-red-700{% elif key == 'up' %}text-emerald-700{% elif key == 'unknown' %}text-amber-700{% else %}text-slate-600{% endif %}">{% if key == 'down' %}⚠ 异常{% elif key == 'up' %}● 正常{% elif key == 'unknown' %}? 未知{% else %}⏸ 停用{% endif %}</div>
+    <div class="mt-2 text-4xl font-black">{{ value }}</div>
+  </div>
+  {% endfor %}
+</div>

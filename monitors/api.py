@@ -5,6 +5,7 @@ from functools import wraps
 from urllib.parse import unquote
 
 from django.conf import settings
+from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -59,15 +60,18 @@ def tasks(request):
         test_point=request.test_point,
         completed_at__isnull=True,
         task__expires_at__gt=now,
-        task__node__enabled=True,
-        task__node__active_in_subscription=True,
-        task__node__subscription__enabled=True,
-    ).select_related("task", "task__node")
+    ).filter(
+        Q(task__node__enabled=True, task__node__active_in_subscription=True, task__node__subscription__enabled=True)
+        | Q(task__tcp_monitor__enabled=True)
+        | Q(task__https_monitor__enabled=True)
+    ).select_related("task", "task__node", "task__tcp_monitor", "task__https_monitor")
     return JsonResponse(
         {
             "tasks": [
                 {
                     "id": str(assignment.task_id),
+                    "target_type": assignment.task.target_kind,
+                    "target_id": assignment.task.target.pk,
                     "node_id": assignment.task.node_id,
                     "expires_at": assignment.task.expires_at.isoformat(),
                 }
@@ -93,9 +97,14 @@ def results(request):
     for raw in items:
         result_id = str(raw.get("result_id", ""))
         try:
+            target_kind = str(raw.get("target_type") or "xray")
+            if target_kind not in ("xray", "tcp", "https"):
+                raise ValueError("invalid target_type")
+            target_id = raw.get("target_id", raw.get("node_id"))
             parsed = {
                 "result_id": uuid.UUID(result_id),
-                "node_id": int(raw["node_id"]),
+                "target_kind": target_kind,
+                "target_id": int(target_id),
                 "task_id": uuid.UUID(raw["task_id"]) if raw.get("task_id") else None,
                 "checked_at": parse_checked_at(raw["checked_at"]),
                 "success": parse_bool(raw["success"]),

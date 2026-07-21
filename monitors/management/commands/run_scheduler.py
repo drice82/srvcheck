@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from monitors.models import XraySubscription
 from monitors.services import (
-    aggregate_all_nodes,
+    aggregate_all,
     cleanup_history,
     maybe_send_summary,
     save_subscription_result,
@@ -40,7 +40,7 @@ class Command(BaseCommand):
             self.run_periodic("cleanup", cleanup_history)
         if monotonic - self.last_aggregate >= 30:
             self.last_aggregate = monotonic
-            self.run_periodic("aggregate", aggregate_all_nodes)
+            self.run_periodic("aggregate", aggregate_all)
         now = timezone.now()
         subscriptions = XraySubscription.objects.filter(enabled=True).filter(next_sync_at__isnull=True) | XraySubscription.objects.filter(enabled=True, next_sync_at__lte=now)
         for subscription in subscriptions[:5]:

@@ -23,6 +23,36 @@ class Outcome:
 def safe_error(exc):
     return f"{type(exc).__name__}: {str(exc)[:350]}"
 
+async def check_tcp(monitor):
+    started = time.monotonic()
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(monitor.host, monitor.port), monitor.timeout_seconds
+        )
+        writer.close()
+        await writer.wait_closed()
+        return Outcome(True, int((time.monotonic() - started) * 1000), "TCP 连接成功")
+    except Exception as exc:
+        return Outcome(False, int((time.monotonic() - started) * 1000), safe_error(exc))
+
+async def check_https(monitor):
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(
+            verify=monitor.verify_tls,
+            follow_redirects=monitor.follow_redirects,
+            timeout=monitor.timeout_seconds,
+        ) as client:
+            response = await client.get(monitor.url)
+        latency = int((time.monotonic() - started) * 1000)
+        if not monitor.expected_status_min <= response.status_code <= monitor.expected_status_max:
+            return Outcome(False, latency, f"HTTP {response.status_code} 不在期望范围")
+        if monitor.keyword and monitor.keyword not in response.text:
+            return Outcome(False, latency, "响应中未找到关键词")
+        return Outcome(True, latency, f"HTTP {response.status_code}")
+    except Exception as exc:
+        return Outcome(False, int((time.monotonic() - started) * 1000), safe_error(exc))
+
 def decode_subscription(content: str):
     text = content.strip()
     if "://" not in text:
