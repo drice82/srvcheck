@@ -19,6 +19,8 @@ class Outcome:
     latency_ms: int | None = None
     message: str = ""
     proxy_ip: str | None = None
+    download_mbps: float | None = None
+    transferred_bytes: int | None = None
 
 def safe_error(exc):
     return f"{type(exc).__name__}: {str(exc)[:350]}"
@@ -214,6 +216,56 @@ async def check_xray(node, xray_executable=None, ip_check_url=None):
                 raise RuntimeError(f"探测地址返回 HTTP {response.status_code}")
             proxy_ip = parse_proxy_ip(response)
             return Outcome(True, int((time.monotonic() - started) * 1000), "Xray 代理可用", proxy_ip)
+    except Exception as exc:
+        detail = safe_error(exc)
+        if process:
+            runtime_error = await stop_xray_process(process)
+            process = None
+            if runtime_error:
+                detail = f"{detail} | Xray: {runtime_error}"
+        return Outcome(False, int((time.monotonic() - started) * 1000), detail[:500])
+    finally:
+        if process and process.returncode is None:
+            await stop_xray_process(process)
+
+
+async def check_xray_speed(node, xray_executable=None, speed_test_url=None, speed_test_timeout=60):
+    """Run one download throughput measurement through exactly one Xray node."""
+    started, port = time.monotonic(), free_port()
+    process = None
+    try:
+        config = xray_config_from_link(node.share_link, port)
+        with tempfile.TemporaryDirectory(prefix="srvcheck-xray-speed-") as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(config), encoding="utf-8")
+            os.chmod(path, 0o600)
+            executable = xray_executable or os.getenv("XRAY_EXECUTABLE", "xray")
+            url = speed_test_url or os.getenv(
+                "XRAY_SPEEDTEST_URL", "https://speed.cloudflare.com/__down?bytes=25000000"
+            )
+            process = await asyncio.create_subprocess_exec(
+                executable, "run", "-c", str(path),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            await wait_port(port, min(node.timeout_seconds, 5), process)
+            byte_count = 0
+            download_started = time.monotonic()
+            async with httpx.AsyncClient(
+                proxy=f"socks5://127.0.0.1:{port}", timeout=speed_test_timeout, follow_redirects=True
+            ) as client:
+                async with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes():
+                        byte_count += len(chunk)
+            elapsed = max(time.monotonic() - download_started, 0.001)
+            if byte_count == 0:
+                raise RuntimeError("测速地址未返回数据")
+            mbps = byte_count * 8 / elapsed / 1_000_000
+            message = f"下载 {mbps:.2f} Mbps · {byte_count / 1_000_000:.1f} MB / {elapsed:.2f} s"
+            return Outcome(
+                True, int((time.monotonic() - started) * 1000), message,
+                download_mbps=round(mbps, 3), transferred_bytes=byte_count,
+            )
     except Exception as exc:
         detail = safe_error(exc)
         if process:

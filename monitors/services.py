@@ -151,10 +151,12 @@ def manifest_payload():
     }
 
 
-def create_manual_check(target):
+def create_manual_check(target, task_type=ManualCheckTask.TaskType.CHECK):
+    if task_type == ManualCheckTask.TaskType.SPEED and target.target_kind != "xray":
+        raise ValueError("speed tests are only supported for Xray nodes")
     now = timezone.now()
     task = ManualCheckTask.objects.create(
-        **target_fk(target), expires_at=now + timedelta(minutes=10)
+        **target_fk(target), task_type=task_type, expires_at=now + timedelta(minutes=10)
     )
     ManualCheckAssignment.objects.bulk_create(
         [ManualCheckAssignment(task=task, test_point=point) for point in TestPoint.objects.filter(enabled=True)]
@@ -196,16 +198,19 @@ def save_client_result(test_point, data):
         **fk,
         test_point=test_point,
         task=task,
+        result_type=task.task_type if task else ClientResult.ResultType.CHECK,
         success=data["success"],
         latency_ms=data.get("latency_ms"),
+        download_mbps=data.get("download_mbps"),
+        transferred_bytes=data.get("transferred_bytes"),
         proxy_ip=data.get("proxy_ip") if kind == "xray" else None,
         message=data.get("message", "")[:500],
         checked_at=data["checked_at"],
     )
-    if kind == "xray":
+    if kind == "xray" and result.result_type == ClientResult.ResultType.CHECK:
         save_xray_snapshots(result)
         transaction.on_commit(lambda: aggregate_node(target.pk))
-    else:
+    elif kind != "xray":
         save_monitor_snapshots(result)
         transaction.on_commit(lambda: aggregate_monitor(target))
     return result, True
@@ -268,7 +273,8 @@ def latest_fresh_results(node, now=None):
     cutoff = now - timedelta(seconds=node.subscription.check_interval_seconds * 2)
     latest = {}
     results = ClientResult.objects.filter(
-        node=node, test_point__enabled=True, received_at__gte=cutoff
+        node=node, result_type=ClientResult.ResultType.CHECK,
+        test_point__enabled=True, received_at__gte=cutoff
     ).select_related("test_point").order_by("test_point_id", "-received_at")
     for result in results:
         latest.setdefault(result.test_point_id, result)
@@ -280,7 +286,8 @@ def latest_fresh_monitor_results(monitor, now=None):
     cutoff = now - timedelta(seconds=monitor.check_interval_seconds * 2)
     latest = {}
     results = ClientResult.objects.filter(
-        **target_fk(monitor), test_point__enabled=True, received_at__gte=cutoff
+        **target_fk(monitor), result_type=ClientResult.ResultType.CHECK,
+        test_point__enabled=True, received_at__gte=cutoff
     ).select_related("test_point").order_by("test_point_id", "-received_at")
     for result in results:
         latest.setdefault(result.test_point_id, result)

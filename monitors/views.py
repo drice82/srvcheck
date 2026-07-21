@@ -19,6 +19,7 @@ from .forms import (
 )
 from .models import (
     ClientResult,
+    ManualCheckTask,
     MonitorSnapshot,
     NotificationSetting,
     TestPoint,
@@ -90,7 +91,9 @@ def prepare_status_bars(targets, now, kind):
             node_id__in=target_ids, bucket_start__gte=cutoff
         ).select_related("test_point")
         target_key = lambda snapshot: snapshot.node_id
-        recent = ClientResult.objects.filter(node_id__in=target_ids).select_related("test_point").order_by("node_id", "test_point_id", "-received_at")
+        recent = ClientResult.objects.filter(
+            node_id__in=target_ids, result_type=ClientResult.ResultType.CHECK
+        ).select_related("test_point").order_by("node_id", "test_point_id", "-received_at")
         result_key = lambda result: result.node_id
     else:
         fk = f"{kind}_monitor"
@@ -122,6 +125,19 @@ def prepare_status_bars(targets, now, kind):
         if kind == "xray":
             mark_ip_changes(target.status_bars, points)
         target.latest_results = [latest[(target.pk, point.pk)] for point in points if (target.pk, point.pk) in latest]
+
+    if kind == "xray":
+        latest_speed = {}
+        speed_results = ClientResult.objects.filter(
+            node_id__in=target_ids, result_type=ClientResult.ResultType.SPEED
+        ).select_related("test_point").order_by("node_id", "test_point_id", "-received_at")
+        for result in speed_results:
+            latest_speed.setdefault((result.node_id, result.test_point_id), result)
+        for target in targets:
+            target.latest_speed_results = [
+                latest_speed[(target.pk, point.pk)]
+                for point in points if (target.pk, point.pk) in latest_speed
+            ]
 
 
 def make_bucket(node_id, points, source, bucket, label, kind):
@@ -200,10 +216,24 @@ def subscription_sync(request, pk):
 def check_now(request, pk):
     if request.method != "POST":
         return HttpResponse(status=405)
-    node = get_object_or_404(XrayNode, pk=pk, active_in_subscription=True, enabled=True)
+    node = get_object_or_404(
+        XrayNode, pk=pk, active_in_subscription=True, enabled=True, subscription__enabled=True
+    )
     task = create_manual_check(node)
     count = task.assignments.count()
     messages.success(request, f"已向 {count} 个测试点下发检查任务")
+    return redirect(request.META.get("HTTP_REFERER") or "dashboard")
+
+
+@login_required
+def speed_test_now(request, pk):
+    if request.method != "POST":
+        return HttpResponse(status=405)
+    node = get_object_or_404(
+        XrayNode, pk=pk, active_in_subscription=True, enabled=True, subscription__enabled=True
+    )
+    task = create_manual_check(node, ManualCheckTask.TaskType.SPEED)
+    messages.success(request, f"已向 {task.assignments.count()} 个测试点下发该节点的测速任务")
     return redirect(request.META.get("HTTP_REFERER") or "dashboard")
 
 

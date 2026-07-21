@@ -192,6 +192,27 @@ class ClientApiTests(BaseNodeTest):
         save_client_result(self.point, data)
         self.assertIsNotNone(ManualCheckAssignment.objects.get(task=task, test_point=self.point).completed_at)
 
+    def test_speed_task_is_explicit_and_does_not_update_health_history(self):
+        task = create_manual_check(self.node, task_type="speed")
+        response = self.client.get("/api/v1/client/tasks", **self.headers)
+        item = response.json()["tasks"][0]
+        self.assertEqual(item["task_type"], "speed")
+        self.assertEqual(item["target_type"], "xray")
+        self.assertEqual(item["target_id"], self.node.pk)
+
+        result, created = save_client_result(self.point, {
+            "result_id": uuid.uuid4(), "target_kind": "xray", "target_id": self.node.pk,
+            "task_id": task.pk, "checked_at": timezone.now(), "success": True,
+            "latency_ms": 1500, "download_mbps": 123.45, "transferred_bytes": 25_000_000,
+            "message": "下载 123.45 Mbps",
+        })
+        self.assertTrue(created)
+        self.assertEqual(result.result_type, "speed")
+        self.assertEqual(result.download_mbps, 123.45)
+        self.assertFalse(XrayNodeSnapshot.objects.filter(node=self.node).exists())
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.status, "unknown")
+
 
 class AggregationTests(BaseNodeTest):
     def test_unchanged_status_does_not_write_node(self):
@@ -695,9 +716,24 @@ class PageTests(BaseNodeTest):
         self.assertContains(response, "Xray 服务总览")
         self.assertContains(response, "Xray 订阅")
         self.assertContains(response, ">测试</button>")
+        self.assertContains(response, ">测速</button>")
         self.assertNotContains(response, "全部测试点立即检查")
         self.assertNotContains(response, ">TCP<")
         self.assertNotContains(response, ">HTTPS<")
+
+    def test_speed_button_creates_one_node_only_speed_task(self):
+        TestPoint.objects.create(name="深圳")
+        other = XrayNode.objects.create(
+            subscription=self.subscription, name="Tokyo", protocol="trojan", fingerprint="b" * 64,
+            share_link="trojan://secret@example.org:443#Tokyo",
+        )
+        self.client.force_login(self.user)
+        response = self.client.post(f"/nodes/{self.node.pk}/speed-test/")
+        self.assertRedirects(response, "/")
+        task = self.node.manual_tasks.get()
+        self.assertEqual(task.task_type, "speed")
+        self.assertEqual(task.assignments.count(), 1)
+        self.assertFalse(other.manual_tasks.exists())
 
     def test_legacy_subscription_page_redirects_to_dashboard(self):
         self.client.force_login(self.user)

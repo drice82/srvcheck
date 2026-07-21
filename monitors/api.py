@@ -1,4 +1,5 @@
 import json
+import math
 import secrets
 import uuid
 from functools import wraps
@@ -73,6 +74,7 @@ def tasks(request):
                     "target_type": assignment.task.target_kind,
                     "target_id": assignment.task.target.pk,
                     "node_id": assignment.task.node_id,
+                    "task_type": assignment.task.task_type,
                     "expires_at": assignment.task.expires_at.isoformat(),
                 }
                 for assignment in assignments
@@ -109,6 +111,8 @@ def results(request):
                 "checked_at": parse_checked_at(raw["checked_at"]),
                 "success": parse_bool(raw["success"]),
                 "latency_ms": parse_optional_nonnegative_int(raw.get("latency_ms")),
+                "download_mbps": parse_optional_nonnegative_float(raw.get("download_mbps")),
+                "transferred_bytes": parse_optional_nonnegative_int(raw.get("transferred_bytes")),
                 "proxy_ip": raw.get("proxy_ip") or None,
                 "message": str(raw.get("message", "")),
             }
@@ -148,4 +152,13 @@ def parse_optional_nonnegative_int(value):
     parsed = int(value)
     if parsed < 0:
         raise ValueError("latency_ms must be nonnegative")
+    return parsed
+
+
+def parse_optional_nonnegative_float(value):
+    if value is None:
+        return None
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError("value must be nonnegative")
     return parsed

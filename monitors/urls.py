@@ -15,6 +15,7 @@ urlpatterns = [
     path("subscriptions/<int:pk>/sync/", views.subscription_sync, name="subscription-sync"),
     path("nodes/<int:pk>/edit/", views.node_form, name="node-edit"),
     path("nodes/<int:pk>/check/", views.check_now, name="check-now"),
+    path("nodes/<int:pk>/speed-test/", views.speed_test_now, name="speed-test-now"),
     path("tcp/", views.monitor_page, {"kind": "tcp"}, name="tcp-monitors"),
     path("partials/tcp/", views.monitor_partial, {"kind": "tcp"}, name="tcp-partial"),
     path("tcp/new/", views.monitor_form, {"kind": "tcp"}, name="tcp-new"),

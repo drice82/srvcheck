@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
-from monitors.checkers import check_https, check_tcp, check_xray
+from monitors.checkers import check_https, check_tcp, check_xray, check_xray_speed
 
 
 class ClientAgent:
@@ -122,16 +122,18 @@ class ClientAgent:
                         None,
                     )
                     if item:
-                        await self.test_target(item, task_id=task["id"])
+                        await self.test_target(
+                            item, task_id=task["id"], task_type=task.get("task_type", "check")
+                        )
             except Exception as exc:
                 print(f"task poll failed: {type(exc).__name__}: {exc}", flush=True)
             await asyncio.sleep(5)
 
-    async def test_target(self, target, task_id=None):
+    async def test_target(self, target, task_id=None, task_type="check"):
         kind = target.get("kind", "xray")
         async with self.semaphore:
             checked_at = datetime.now(timezone.utc).isoformat()
-            outcome = await self.probe(kind, target)
+            outcome = await self.probe(kind, target, task_type=task_type)
             result = {
                 "result_id": str(uuid.uuid4()),
                 "target_type": kind,
@@ -143,6 +145,9 @@ class ClientAgent:
             }
             if kind == "xray":
                 result["proxy_ip"] = outcome.proxy_ip
+            if task_type == "speed":
+                result["download_mbps"] = outcome.download_mbps
+                result["transferred_bytes"] = outcome.transferred_bytes
             key = f"{kind}:{target['id']}"
             if task_id:
                 result["task_id"] = task_id
@@ -151,8 +156,20 @@ class ClientAgent:
             atomic_json(self.pending_path, self.pending)
             print(f"checked {kind} {target['name']}: {'up' if outcome.success else 'down'}", flush=True)
 
-    async def probe(self, kind, target):
+    async def probe(self, kind, target, task_type="check"):
         timeout = int(target["timeout_seconds"])
+        if task_type == "speed":
+            if kind != "xray":
+                raise ValueError("speed tests are only supported for Xray nodes")
+            probe_target = SimpleNamespace(share_link=target["share_link"], timeout_seconds=timeout)
+            return await check_xray_speed(
+                probe_target,
+                xray_executable=os.getenv("XRAY_EXECUTABLE", "/usr/local/bin/xray"),
+                speed_test_url=os.getenv(
+                    "XRAY_SPEEDTEST_URL", "https://speed.cloudflare.com/__down?bytes=25000000"
+                ),
+                speed_test_timeout=int(os.getenv("XRAY_SPEEDTEST_TIMEOUT", "60")),
+            )
         if kind == "tcp":
             probe_target = SimpleNamespace(host=target["host"], port=int(target["port"]), timeout_seconds=timeout)
             return await check_tcp(probe_target)

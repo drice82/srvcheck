@@ -179,6 +179,10 @@ class TestPoint(models.Model):
 
 
 class ManualCheckTask(models.Model):
+    class TaskType(models.TextChoices):
+        CHECK = "check", "检查"
+        SPEED = "speed", "测速"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     node = models.ForeignKey(
         XrayNode, related_name="manual_tasks", on_delete=models.CASCADE, null=True, blank=True
@@ -191,6 +195,7 @@ class ManualCheckTask(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(db_index=True)
+    task_type = models.CharField(max_length=10, choices=TaskType.choices, default=TaskType.CHECK)
 
     class Meta:
         ordering = ["-created_at"]
@@ -230,6 +235,10 @@ class ManualCheckAssignment(models.Model):
 
 
 class ClientResult(models.Model):
+    class ResultType(models.TextChoices):
+        CHECK = "check", "检查"
+        SPEED = "speed", "测速"
+
     result_id = models.UUIDField(unique=True, default=uuid.uuid4, editable=False)
     node = models.ForeignKey(
         XrayNode, related_name="client_results", on_delete=models.CASCADE, null=True, blank=True
@@ -244,8 +253,11 @@ class ClientResult(models.Model):
     task = models.ForeignKey(
         ManualCheckTask, related_name="results", on_delete=models.SET_NULL, null=True, blank=True
     )
+    result_type = models.CharField(max_length=10, choices=ResultType.choices, default=ResultType.CHECK)
     success = models.BooleanField()
     latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    download_mbps = models.FloatField(null=True, blank=True)
+    transferred_bytes = models.PositiveBigIntegerField(null=True, blank=True)
     proxy_ip = models.GenericIPAddressField(null=True, blank=True)
     message = models.CharField(max_length=500, blank=True)
     checked_at = models.DateTimeField()

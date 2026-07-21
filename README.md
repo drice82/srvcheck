@@ -28,6 +28,8 @@ docker compose ps
 
 节点可以在订阅页面临时编辑。保存后服务端会立即向全部启用测试点下发检查任务；下一次订阅同步会使用订阅内容覆盖临时编辑。TCP/HTTPS 监控新增或编辑后同样会立即下发检查任务；编辑会重置聚合状态并清除该目标的旧报告。
 
+每个 Xray 节点的“测速”按钮会向全部启用测试点下发一次仅针对该节点的下载测速任务。测速不会进入周期检查，也不参与节点状态聚合和历史状态条；默认下载 25 MB，可用客户端环境变量 `XRAY_SPEEDTEST_URL` 与 `XRAY_SPEEDTEST_TIMEOUT` 调整测速地址和超时。
+
 客户端 API 会返回完整节点分享链接，生产环境必须通过 HTTPS 暴露服务端。
 
 ## 客户端部署
@@ -53,7 +55,7 @@ X-Client-Name: <UTF-8 百分号编码后的测试点名称>
 ```
 
 - `GET /api/v1/client/manifest`：监控目标清单（`nodes`、`tcp_monitors`、`https_monitors`，均带 `kind` 与检查参数），支持 ETag。
-- `GET /api/v1/client/tasks`：待执行的手动检查任务，返回 `target_type`（xray/tcp/https）与 `target_id`。
+- `GET /api/v1/client/tasks`：待执行的手动任务，返回 `task_type`（check/speed）、`target_type`（xray/tcp/https）与 `target_id`。
 - `POST /api/v1/client/results`：幂等批量结果上报，每条携带 `target_type` + `target_id`（旧客户端的 `node_id` 仍按 Xray 节点兼容处理）。
 
 ## 升级说明

@@ -11,6 +11,8 @@ services:
       CLIENT_API_TOKEN: ${CLIENT_API_TOKEN:-}
       XRAY_CONCURRENCY: ${XRAY_CONCURRENCY:-4}
       XRAY_IP_CHECK_URL: ${XRAY_IP_CHECK_URL:-https://api.ipify.org?format=json}
+      XRAY_SPEEDTEST_URL: ${XRAY_SPEEDTEST_URL:-https://speed.cloudflare.com/__down?bytes=25000000}
+      XRAY_SPEEDTEST_TIMEOUT: ${XRAY_SPEEDTEST_TIMEOUT:-60}
     volumes:
       - srvcheck-client-data:/app/data
 

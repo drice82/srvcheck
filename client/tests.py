@@ -65,6 +65,18 @@ class AgentQueueTests(unittest.IsolatedAsyncioTestCase):
         await self.agent.test_target(self.node, task_id="task-id")
         self.assertIn("task:task-id", load_json(self.agent.pending_path, {}))
 
+    @patch("client.main.check_xray_speed", new_callable=AsyncMock)
+    async def test_speed_result_only_runs_for_explicit_speed_task(self, speed_check):
+        speed_check.return_value = Outcome(
+            True, 1500, "下载 100.00 Mbps", download_mbps=100.0,
+            transferred_bytes=25_000_000,
+        )
+        await self.agent.test_target(self.node, task_id="speed-task", task_type="speed")
+        result = self.agent.pending["task:speed-task"]
+        self.assertEqual(result["download_mbps"], 100.0)
+        self.assertEqual(result["transferred_bytes"], 25_000_000)
+        speed_check.assert_awaited_once()
+
     @patch("client.main.check_tcp", new_callable=AsyncMock)
     async def test_tcp_target_reports_target_type(self, check):
         check.return_value = Outcome(True, 5, "TCP 连接成功")
