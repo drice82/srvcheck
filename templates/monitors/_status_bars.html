@@ -1,4 +1,4 @@
-<div class="order-last w-full basis-full overflow-x-auto border-t border-slate-200 px-1 pb-1 pt-5 lg:order-none lg:w-auto lg:min-w-0 lg:basis-0 lg:flex-1 lg:border-0 lg:overflow-x-visible">
+<div class="order-last w-full basis-full overflow-x-auto border-t border-slate-200 px-1 pb-1 pt-3 lg:order-none lg:w-auto lg:min-w-0 lg:basis-0 lg:flex-1 lg:border-0 lg:pt-0 lg:overflow-x-visible">
   <div class="flex min-w-max items-end gap-px xl:gap-1" aria-label="各测试点状态历史">
   {% for bar in target.status_bars %}
     <div class="flex w-2 flex-col gap-px xl:w-3 {% if bar.kind == 'hourly' and forloop.counter == 8 %}ml-3{% endif %}" aria-label="{{ bar.label }}">

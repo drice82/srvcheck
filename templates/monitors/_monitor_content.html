@@ -6,14 +6,14 @@
   {% for point in test_points %}<span class="rounded-full border bg-white px-3 py-1">{{ forloop.counter }} · {{ point.name }}</span>{% empty %}<span class="text-amber-700">请先添加测试点</span>{% endfor %}
 </div>
 <section class="rounded-xl bg-white p-5 shadow-sm">
-  <div class="space-y-3">
+  <div class="space-y-2">
     {% for object in objects %}
-    <div class="rounded-lg border p-4 {% if object.status == 'down' %}border-red-300 bg-red-50{% else %}border-slate-200 bg-slate-50{% endif %}">
-      <div class="flex flex-wrap items-center gap-4">
-        <div class="min-w-48"><div class="flex items-center gap-2"><span class="font-bold">{{ object.name }}</span><span>{% include "monitors/_status_badge.html" with object=object %}</span></div><div class="mt-1 flex gap-2 text-sm"><span class="rounded bg-slate-800 px-2 py-0.5 text-xs font-bold text-white">{{ object.monitor_type_label }}</span><span class="break-all font-mono">{{ object.endpoint }}</span></div></div>
+    <div class="rounded-lg border px-3 py-2 {% if object.status == 'down' %}border-red-300 bg-red-50{% else %}border-slate-200 bg-slate-50{% endif %}">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div class="w-52 min-w-0"><div class="flex items-center gap-2"><span class="truncate font-bold">{{ object.name }}</span><span class="shrink-0">{% include "monitors/_status_badge.html" with object=object %}</span></div><div class="mt-0.5 flex items-center gap-1.5 text-xs"><span class="shrink-0 rounded bg-slate-800 px-1.5 py-0.5 font-bold text-white">{{ object.monitor_type_label }}</span><span class="truncate font-mono text-slate-500" title="{{ object.endpoint }}">{{ object.endpoint }}</span></div></div>
         {% include "monitors/_status_bars.html" with target=object %}
-        <div class="min-w-48 text-xs text-slate-500">{% for result in object.latest_results %}<div><span class="font-medium text-slate-800">{{ result.test_point.name }}</span> · {% if result.success %}<span class="text-emerald-700">正常</span>{% else %}<span class="text-red-700">异常</span>{% endif %} · {{ result.latency_ms|default_if_none:"-" }} ms · {{ result.checked_at|date:"H:i" }}</div>{% empty %}<div>尚无客户端报告</div>{% endfor %}</div>
-        <div class="flex shrink-0 gap-2"><a class="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium" href="{% url edit_url object.pk %}">编辑</a><form method="post" action="{% url check_url object.pk %}">{% csrf_token %}<button class="rounded-lg border border-cyan-300 bg-white px-3 py-2 text-sm font-medium text-cyan-700">测试</button></form></div>
+        <div class="w-60 min-w-0 text-xs leading-5 text-slate-500">{% include "monitors/_point_summaries.html" with target=object %}</div>
+        <div class="flex shrink-0 gap-1.5"><a class="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium" href="{% url edit_url object.pk %}">编辑</a><form method="post" action="{% url check_url object.pk %}">{% csrf_token %}<button class="rounded-md border border-cyan-300 bg-white px-2.5 py-1 text-xs font-medium text-cyan-700">测试</button></form></div>
       </div>
     </div>
     {% empty %}<p class="text-slate-500">尚未添加监控</p>{% endfor %}

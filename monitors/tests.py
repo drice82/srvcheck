@@ -576,7 +576,8 @@ class MonitorSnapshotTests(BaseMonitorTest):
         latest_bar = self.https.status_bars[-1]
         by_point = {segment.test_point.name: segment.status for segment in latest_bar.segments}
         self.assertEqual(by_point, {"深圳": "up", "上海": "unknown"})
-        self.assertEqual(len(self.https.latest_results), 1)
+        by_point_summary = {s.point.name: s.status for s in self.https.point_summaries}
+        self.assertEqual(by_point_summary, {"深圳": "up", "上海": "unknown"})
 
     def test_cleanup_history_removes_old_monitor_snapshots(self):
         point = TestPoint.objects.create(name="深圳")

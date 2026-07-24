@@ -134,6 +134,12 @@ def prepare_status_bars(targets, now, kind):
     for result in recent:
         latest.setdefault((result_key(result), result.test_point_id), result)
 
+    latest_speed = {}
+    if kind == "xray":
+        speed_results = latest_client_results("node", target_ids, ClientResult.ResultType.SPEED)
+        for result in speed_results:
+            latest_speed.setdefault((result.node_id, result.test_point_id), result)
+
     for target in targets:
         daily_bars = [make_bucket(target.pk, points, daily, day, label, "daily") for day, label in daily_columns]
         hourly_bars = [
@@ -145,18 +151,18 @@ def prepare_status_bars(targets, now, kind):
         if kind == "xray":
             mark_ip_changes(target.status_bars, points)
         finalize_status_bars(target.status_bars, local_tz)
-        target.latest_results = [latest[(target.pk, point.pk)] for point in points if (target.pk, point.pk) in latest]
-
-    if kind == "xray":
-        latest_speed = {}
-        speed_results = latest_client_results("node", target_ids, ClientResult.ResultType.SPEED)
-        for result in speed_results:
-            latest_speed.setdefault((result.node_id, result.test_point_id), result)
-        for target in targets:
-            target.latest_speed_results = [
-                latest_speed[(target.pk, point.pk)]
-                for point in points if (target.pk, point.pk) in latest_speed
-            ]
+        # One fixed-height summary line per test point, so every node card has
+        # the same height and speed results never add extra lines.
+        target.point_summaries = [
+            build_point_summary(
+                point,
+                latest.get((target.pk, point.pk)),
+                latest_speed.get((target.pk, point.pk)),
+                local_tz,
+                kind,
+            )
+            for point in points
+        ]
 
 
 def make_bucket(node_id, points, source, bucket, label, kind):
@@ -220,6 +226,35 @@ def finalize_status_bars(bars, local_tz):
                 if snapshot.message:
                     title += f" · {snapshot.message}"
             segment.title = title
+
+
+def build_point_summary(point, check, speed, local_tz, kind):
+    summary = SimpleNamespace(
+        point=point, check=check, speed=speed, status="unknown", detail="", speed_text=""
+    )
+    lines = []
+    if check is None:
+        lines.append(f"{point.name} · 暂无检查数据")
+    else:
+        summary.status = "up" if check.success else "down"
+        status_text = "正常" if check.success else "异常"
+        checked = check.checked_at.astimezone(local_tz).strftime("%H:%M")
+        latency = check.latency_ms if check.latency_ms is not None else "-"
+        if kind == "xray":
+            summary.detail = check.proxy_ip or "—"
+            lines.append(f"{point.name} · 检查{status_text} · {checked} · IP {summary.detail} · {latency} ms")
+        else:
+            summary.detail = f"{latency} ms"
+            lines.append(f"{point.name} · 检查{status_text} · {checked} · {latency} ms")
+        if check.message:
+            lines[-1] += f" · {check.message}"
+    if speed is not None:
+        checked = speed.checked_at.astimezone(local_tz).strftime("%H:%M")
+        ok = speed.success and speed.download_mbps is not None
+        summary.speed_text = f"{speed.download_mbps:.2f} Mbps" if ok else "失败"
+        lines.append(f"{point.name} · 测速 {summary.speed_text} · {checked}")
+    summary.title = "\n".join(lines)
+    return summary
 
 
 @login_required
