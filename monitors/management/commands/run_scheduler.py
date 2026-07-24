@@ -11,6 +11,7 @@ from monitors.services import (
     aggregate_all,
     cleanup_history,
     maybe_send_summary,
+    refresh_all_node_ip_info,
     save_subscription_result,
     synchronize_subscription,
 )
@@ -41,6 +42,7 @@ class Command(BaseCommand):
         if monotonic - self.last_aggregate >= 30:
             self.last_aggregate = monotonic
             self.run_periodic("aggregate", aggregate_all)
+            self.run_periodic("ip info", refresh_all_node_ip_info)
         now = timezone.now()
         subscriptions = XraySubscription.objects.filter(enabled=True).filter(next_sync_at__isnull=True) | XraySubscription.objects.filter(enabled=True, next_sync_at__lte=now)
         for subscription in subscriptions[:5]:

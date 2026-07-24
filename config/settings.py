@@ -57,3 +57,6 @@ LOGOUT_REDIRECT_URL = "login"
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SCHEDULER_TICK_SECONDS = float(os.getenv("SCHEDULER_TICK_SECONDS", "2"))
 CLIENT_API_TOKEN = os.getenv("CLIENT_API_TOKEN", "")
+IPINFO_TOKEN = os.getenv("IPINFO_TOKEN", "")
+IPINFO_URL = os.getenv("IPINFO_URL", "https://ipinfo.io/{ip}/json")
+IPINFO_TIMEOUT_SECONDS = float(os.getenv("IPINFO_TIMEOUT_SECONDS", "5"))

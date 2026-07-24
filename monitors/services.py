@@ -1,6 +1,9 @@
 import asyncio
 import hashlib
+import ipaddress
 import json
+import re
+from collections import Counter
 from datetime import timedelta, timezone as datetime_timezone
 from urllib.parse import quote
 
@@ -74,12 +77,18 @@ def save_subscription_result(subscription, nodes, error):
             obj = XrayNode(subscription=subscription)
         else:
             unused.pop(obj.pk, None)
+        configuration_changed = bool(obj.pk and obj.share_link != data["share_link"])
         obj.name = data["name"]
         obj.share_link = data["share_link"]
         obj.protocol = data["protocol"]
         obj.fingerprint = data["fingerprint"]
         obj.active_in_subscription = True
         obj.enabled = True
+        if configuration_changed:
+            obj.exit_ip = None
+            obj.country_code = ""
+            obj.company_name = ""
+            obj.ip_info_checked_at = None
         if obj.status == XrayNode.Status.DISABLED:
             obj.status = XrayNode.Status.UNKNOWN
         obj.save()
@@ -279,6 +288,122 @@ def latest_fresh_results(node, now=None):
     for result in results:
         latest.setdefault(result.test_point_id, result)
     return latest
+
+
+def consensus_proxy_ip(latest):
+    """Choose the most commonly reported successful proxy IP.
+
+    A freshest-report tie breaker makes an exact tie deterministic while still
+    preferring the IP that was observed most recently.
+    """
+    results = [
+        result
+        for result in latest.values()
+        if result.success and result.proxy_ip
+    ]
+    if not results:
+        return None
+    counts = Counter(str(result.proxy_ip) for result in results)
+    newest = {}
+    for result in results:
+        ip = str(result.proxy_ip)
+        newest[ip] = max(newest.get(ip, result.received_at), result.received_at)
+    return max(counts, key=lambda ip: (counts[ip], newest[ip], ip))
+
+
+def _ipinfo_company(data):
+    company = data.get("company")
+    if isinstance(company, dict):
+        company = company.get("name")
+    if company:
+        return str(company)
+    as_data = data.get("as")
+    if isinstance(as_data, dict) and as_data.get("name"):
+        return str(as_data["name"])
+    if data.get("as_name"):
+        return str(data["as_name"])
+    # The classic ipinfo.io response commonly exposes "AS13335 Cloudflare,
+    # Inc." in org. Keep the organization name and omit the ASN prefix.
+    return re.sub(r"^AS\d+\s*", "", str(data.get("org") or "")).strip()
+
+
+def lookup_ip_info(ip):
+    url = settings.IPINFO_URL.format(ip=quote(str(ip), safe=":."))
+    params = {"token": settings.IPINFO_TOKEN} if settings.IPINFO_TOKEN else None
+    response = httpx.get(
+        url,
+        params=params,
+        timeout=settings.IPINFO_TIMEOUT_SECONDS,
+        headers={"User-Agent": "SrvCheck/2.0"},
+    )
+    response.raise_for_status()
+    data = response.json()
+    country = data.get("country_code") or data.get("country") or ""
+    if isinstance(country, dict):
+        country = country.get("code") or ""
+    country = str(country).strip().upper()
+    if len(country) != 2:
+        country = ""
+    return country, _ipinfo_company(data)[:255]
+
+
+IP_INFO_REFRESH_INTERVAL = timedelta(days=7)
+IP_INFO_RETRY_INTERVAL = timedelta(hours=1)
+
+
+def refresh_node_ip_info(node_id, now=None):
+    """Update one node's consensus exit IP and cached ipinfo.io metadata."""
+    now = now or timezone.now()
+    node = XrayNode.objects.select_related("subscription").get(pk=node_id)
+    selected_ip = consensus_proxy_ip(latest_fresh_results(node, now))
+    if not selected_ip:
+        return None
+
+    if str(node.exit_ip or "") != selected_ip:
+        node.exit_ip = selected_ip
+        node.country_code = ""
+        node.company_name = ""
+        node.ip_info_checked_at = None
+        node.save(
+            update_fields=[
+                "exit_ip", "country_code", "company_name", "ip_info_checked_at", "updated_at"
+            ]
+        )
+
+    retry_after = (
+        IP_INFO_REFRESH_INTERVAL
+        if node.country_code or node.company_name
+        else IP_INFO_RETRY_INTERVAL
+    )
+    if node.ip_info_checked_at and now - node.ip_info_checked_at < retry_after:
+        return selected_ip
+
+    # Private, loopback and documentation ranges have no meaningful public
+    # ownership metadata and should not consume an external API request.
+    if not ipaddress.ip_address(selected_ip).is_global:
+        XrayNode.objects.filter(pk=node.pk).update(ip_info_checked_at=now)
+        return selected_ip
+
+    try:
+        country_code, company_name = lookup_ip_info(selected_ip)
+    except (httpx.HTTPError, ValueError, TypeError):
+        XrayNode.objects.filter(pk=node.pk).update(ip_info_checked_at=now)
+        return selected_ip
+
+    XrayNode.objects.filter(pk=node.pk, exit_ip=selected_ip).update(
+        country_code=country_code,
+        company_name=company_name,
+        ip_info_checked_at=now,
+    )
+    return selected_ip
+
+
+def refresh_all_node_ip_info():
+    node_ids = XrayNode.objects.filter(
+        active_in_subscription=True, enabled=True, subscription__enabled=True
+    ).values_list("pk", flat=True)
+    for node_id in node_ids:
+        refresh_node_ip_info(node_id)
 
 
 def latest_fresh_monitor_results(monitor, now=None):

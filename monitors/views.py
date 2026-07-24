@@ -327,6 +327,10 @@ def node_form(request, pk):
         saved.incident_open = False
         saved.last_checked_at = None
         saved.last_changed_at = timezone.now()
+        saved.exit_ip = None
+        saved.country_code = ""
+        saved.company_name = ""
+        saved.ip_info_checked_at = None
         saved.save()
         # Historical buckets remain visible, but pre-edit raw results must not
         # participate in consensus for the newly edited endpoint.

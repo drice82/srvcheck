@@ -41,8 +41,11 @@ from .services import (
     aggregate_monitor,
     aggregate_node,
     cleanup_history,
+    consensus_proxy_ip,
     create_manual_check,
+    lookup_ip_info,
     manifest_payload,
+    refresh_node_ip_info,
     save_client_result,
     save_subscription_result,
     send_summary_report,
@@ -322,6 +325,81 @@ class AggregationTests(BaseNodeTest):
         recovery = NotificationLog.objects.filter(title__contains="恢复正常").get()
         self.assertIn("上海: ✅ 正常", recovery.body)
         self.assertIn("深圳: ✅ 正常", recovery.body)
+
+
+class NodeIpInfoTests(BaseNodeTest):
+    def test_consensus_proxy_ip_uses_most_common_successful_ip(self):
+        points = [TestPoint.objects.create(name=name) for name in ("深圳", "上海", "北京")]
+        older = timezone.now() - timedelta(minutes=1)
+        a = self.result(points[0], True, received_at=older, proxy_ip="8.8.8.8")
+        b = self.result(points[1], True, received_at=older, proxy_ip="8.8.8.8")
+        c = self.result(points[2], True, proxy_ip="1.1.1.1")
+
+        self.assertEqual(
+            consensus_proxy_ip({a.test_point_id: a, b.test_point_id: b, c.test_point_id: c}),
+            "8.8.8.8",
+        )
+
+    def test_consensus_proxy_ip_uses_newest_report_to_break_tie(self):
+        a = TestPoint.objects.create(name="深圳")
+        b = TestPoint.objects.create(name="上海")
+        older = timezone.now() - timedelta(minutes=1)
+        old_result = self.result(a, True, received_at=older, proxy_ip="8.8.8.8")
+        new_result = self.result(b, True, proxy_ip="1.1.1.1")
+
+        self.assertEqual(
+            consensus_proxy_ip({a.pk: old_result, b.pk: new_result}),
+            "1.1.1.1",
+        )
+
+    @override_settings(
+        IPINFO_URL="https://ipinfo.example/{ip}/json",
+        IPINFO_TOKEN="token",
+        IPINFO_TIMEOUT_SECONDS=3,
+    )
+    @patch("monitors.services.httpx.get")
+    def test_refresh_stores_consensus_ip_country_and_company(self, get):
+        response = Mock()
+        response.raise_for_status = Mock()
+        response.json.return_value = {"country": "US", "org": "AS15169 Google LLC"}
+        get.return_value = response
+        points = [TestPoint.objects.create(name=name) for name in ("深圳", "上海", "北京")]
+        self.result(points[0], True, proxy_ip="8.8.8.8")
+        self.result(points[1], True, proxy_ip="8.8.8.8")
+        self.result(points[2], True, proxy_ip="1.1.1.1")
+
+        self.assertEqual(refresh_node_ip_info(self.node.pk), "8.8.8.8")
+
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.exit_ip, "8.8.8.8")
+        self.assertEqual(self.node.country_code, "US")
+        self.assertEqual(self.node.company_name, "Google LLC")
+        get.assert_called_once_with(
+            "https://ipinfo.example/8.8.8.8/json",
+            params={"token": "token"},
+            timeout=3,
+            headers={"User-Agent": "SrvCheck/2.0"},
+        )
+
+    @override_settings(
+        IPINFO_URL="https://ipinfo.example/{ip}/json",
+        IPINFO_TOKEN="",
+        IPINFO_TIMEOUT_SECONDS=5,
+    )
+    @patch("monitors.services.httpx.get")
+    def test_lookup_supports_structured_company(self, get):
+        response = Mock()
+        response.raise_for_status = Mock()
+        response.json.return_value = {
+            "country_code": "de",
+            "company": {"name": "Example Hosting GmbH"},
+        }
+        get.return_value = response
+
+        self.assertEqual(
+            lookup_ip_info("8.8.4.4"),
+            ("DE", "Example Hosting GmbH"),
+        )
 
 
 class SnapshotAndViewTests(BaseNodeTest):
@@ -782,6 +860,16 @@ class PageTests(BaseNodeTest):
         response = self.client.get("/")
         self.assertContains(response, timezone.localtime(checked_at).strftime("%H:%M"))
         self.assertContains(response, "203.0.113.9")
+
+    def test_dashboard_displays_consensus_ip_country_and_company(self):
+        XrayNode.objects.filter(pk=self.node.pk).update(
+            exit_ip="8.8.8.8", country_code="US", company_name="Google LLC"
+        )
+        self.client.force_login(self.user)
+        response = self.client.get("/")
+        self.assertContains(response, "8.8.8.8")
+        self.assertContains(response, "US")
+        self.assertContains(response, "Google LLC")
 
 
 class MonitorPageTests(TestCase):

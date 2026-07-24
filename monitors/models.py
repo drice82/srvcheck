@@ -47,6 +47,10 @@ class XrayNode(models.Model):
     incident_open = models.BooleanField(default=False, editable=False)
     last_checked_at = models.DateTimeField(null=True, blank=True, editable=False)
     last_changed_at = models.DateTimeField(null=True, blank=True, editable=False)
+    exit_ip = models.GenericIPAddressField("出口 IP", null=True, blank=True, editable=False)
+    country_code = models.CharField("国家代码", max_length=2, blank=True, editable=False)
+    company_name = models.CharField("公司名", max_length=255, blank=True, editable=False)
+    ip_info_checked_at = models.DateTimeField(null=True, blank=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
