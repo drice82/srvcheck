@@ -8,4 +8,10 @@
     </div>
   {% endfor %}
   </div>
+  {% if show_ip_info %}
+  <div class="mt-1 flex items-start gap-1.5 text-xs leading-4 text-slate-500" title="出口 IP {{ target.exit_ip|default:'—' }}">
+    <span class="shrink-0 rounded bg-slate-200 px-1 font-bold text-slate-700">{{ target.country_code|default:"--" }}</span>
+    <span class="min-w-0 break-words">{{ target.company_name|default:"归属查询中" }}</span>
+  </div>
+  {% endif %}
 </div>
