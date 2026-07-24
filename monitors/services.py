@@ -433,7 +433,7 @@ def notify_status_change(node, action, latest):
     NotificationLog.objects.create(title=title, body=body, success=success, error=error)
 
 
-def cleanup_history(days=30):
+def cleanup_history(days=8):
     now = timezone.now()
     ClientResult.objects.filter(received_at__lt=now - timedelta(days=days)).delete()
     current_hour = now.replace(minute=0, second=0, microsecond=0)
