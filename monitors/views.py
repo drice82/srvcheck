@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.db.models import Prefetch
+from django.db.models import Max, Prefetch
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -76,6 +76,25 @@ def prepare_xray_status_bars(nodes, now):
     prepare_status_bars(nodes, now, "xray")
 
 
+def latest_client_results(fk, target_ids, result_type=None):
+    """Fetch only the newest result per (target, test_point) group.
+
+    The subquery groups on the covering client_result_*_idx indexes, so the
+    page never has to load the full result history into Python.
+    """
+    filters = {f"{fk}_id__in": target_ids}
+    if result_type is not None:
+        filters["result_type"] = result_type
+    latest_ids = (
+        ClientResult.objects.filter(**filters)
+        .values(f"{fk}_id", "test_point_id")
+        .order_by()
+        .annotate(latest_id=Max("id"))
+        .values_list("latest_id", flat=True)
+    )
+    return ClientResult.objects.filter(pk__in=latest_ids).select_related("test_point")
+
+
 def prepare_status_bars(targets, now, kind):
     points = list(TestPoint.objects.filter(enabled=True))
     target_ids = [target.pk for target in targets]
@@ -86,51 +105,51 @@ def prepare_status_bars(targets, now, kind):
     today = timezone.localdate(now)
     daily_dates = [today - timedelta(days=offset) for offset in range(7, 0, -1)]
     cutoff = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=7)
+    local_tz = timezone.get_current_timezone()
+    hourly_columns = [(start, start.astimezone(local_tz).strftime("%m-%d %H:00")) for start in hourly_starts]
+    daily_columns = [(day, day.strftime("%Y-%m-%d")) for day in daily_dates]
     if kind == "xray":
         snapshots = XrayNodeSnapshot.objects.filter(
             node_id__in=target_ids, bucket_start__gte=cutoff
-        ).select_related("test_point")
+        )
         target_key = lambda snapshot: snapshot.node_id
-        recent = ClientResult.objects.filter(
-            node_id__in=target_ids, result_type=ClientResult.ResultType.CHECK
-        ).select_related("test_point").order_by("node_id", "test_point_id", "-received_at")
+        recent = latest_client_results("node", target_ids, ClientResult.ResultType.CHECK)
         result_key = lambda result: result.node_id
     else:
         fk = f"{kind}_monitor"
         snapshots = MonitorSnapshot.objects.filter(
             **{f"{fk}_id__in": target_ids}, bucket_start__gte=cutoff
-        ).select_related("test_point")
+        )
         target_key = lambda snapshot: getattr(snapshot, f"{fk}_id")
-        recent = ClientResult.objects.filter(**{f"{fk}_id__in": target_ids}).select_related("test_point").order_by(f"{fk}_id", "test_point_id", "-received_at")
+        recent = latest_client_results(fk, target_ids)
         result_key = lambda result: getattr(result, f"{fk}_id")
     hourly, daily = {}, {}
     for snapshot in snapshots:
         if snapshot.kind == XrayNodeSnapshot.Kind.HOURLY:
             hourly[(target_key(snapshot), snapshot.test_point_id, snapshot.bucket_start)] = snapshot
         else:
-            daily[(target_key(snapshot), snapshot.test_point_id, timezone.localtime(snapshot.bucket_start).date())] = snapshot
+            daily[(target_key(snapshot), snapshot.test_point_id, snapshot.bucket_start.astimezone(local_tz).date())] = snapshot
 
     latest = {}
     for result in recent:
         latest.setdefault((result_key(result), result.test_point_id), result)
 
     for target in targets:
-        daily_bars = [make_bucket(target.pk, points, daily, day, day.strftime("%Y-%m-%d"), "daily") for day in daily_dates]
+        daily_bars = [make_bucket(target.pk, points, daily, day, label, "daily") for day, label in daily_columns]
         hourly_bars = [
-            make_bucket(target.pk, points, hourly, start, timezone.localtime(start).strftime("%m-%d %H:00"), "hourly")
-            for start in hourly_starts
+            make_bucket(target.pk, points, hourly, start, label, "hourly")
+            for start, label in hourly_columns
         ]
         latest_bar = make_latest_bucket(target.pk, points, latest)
         target.status_bars = daily_bars + hourly_bars + [latest_bar]
         if kind == "xray":
             mark_ip_changes(target.status_bars, points)
+        finalize_status_bars(target.status_bars, local_tz)
         target.latest_results = [latest[(target.pk, point.pk)] for point in points if (target.pk, point.pk) in latest]
 
     if kind == "xray":
         latest_speed = {}
-        speed_results = ClientResult.objects.filter(
-            node_id__in=target_ids, result_type=ClientResult.ResultType.SPEED
-        ).select_related("test_point").order_by("node_id", "test_point_id", "-received_at")
+        speed_results = latest_client_results("node", target_ids, ClientResult.ResultType.SPEED)
         for result in speed_results:
             latest_speed.setdefault((result.node_id, result.test_point_id), result)
         for target in targets:
@@ -179,6 +198,28 @@ def mark_ip_changes(bars, points):
             if old_ip is not None and snapshot.proxy_ip != old_ip:
                 segment.status = "changed"
             previous[segment.test_point.pk] = snapshot.proxy_ip
+
+
+SEGMENT_CSS = {"up": "bg-emerald-500", "changed": "bg-amber-400", "down": "bg-red-500"}
+SEGMENT_TEXT = {"up": "正常", "changed": "正常，IP 变化", "down": "异常"}
+
+
+def finalize_status_bars(bars, local_tz):
+    # Pre-render the per-segment CSS class and tooltip. The template loops over
+    # thousands of segments, so doing this here keeps the hot loop cheap.
+    for bar in bars:
+        for segment in bar.segments:
+            segment.css_class = SEGMENT_CSS.get(segment.status, "bg-slate-300")
+            title = f"{bar.label} · {segment.test_point.name} · {SEGMENT_TEXT.get(segment.status, '暂无数据')}"
+            snapshot = segment.snapshot
+            if snapshot is not None:
+                checked = snapshot.checked_at.astimezone(local_tz).strftime("%H:%M")
+                proxy_ip = getattr(snapshot, "proxy_ip", None) or "无"
+                latency = snapshot.latency_ms if snapshot.latency_ms is not None else "-"
+                title += f" · {checked} · IP {proxy_ip} · {latency} ms"
+                if snapshot.message:
+                    title += f" · {snapshot.message}"
+            segment.title = title
 
 
 @login_required

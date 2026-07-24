@@ -3,7 +3,7 @@
   {% for bar in target.status_bars %}
     <div class="flex w-2 flex-col gap-px xl:w-3 {% if bar.kind == 'hourly' and forloop.counter == 8 %}ml-3{% endif %}" aria-label="{{ bar.label }}">
     {% for segment in bar.segments %}
-      <div class="h-2 rounded-[1px] {% if segment.status == 'up' %}bg-emerald-500{% elif segment.status == 'changed' %}bg-amber-400{% elif segment.status == 'down' %}bg-red-500{% else %}bg-slate-300{% endif %}" title="{{ bar.label }} · {{ segment.test_point.name }} · {% if segment.status == 'up' %}正常{% elif segment.status == 'changed' %}正常，IP 变化{% elif segment.status == 'down' %}异常{% else %}暂无数据{% endif %}{% if segment.snapshot %} · {{ segment.snapshot.checked_at|date:'H:i' }} · IP {{ segment.snapshot.proxy_ip|default:'无' }} · {{ segment.snapshot.latency_ms|default_if_none:'-' }} ms{% if segment.snapshot.message %} · {{ segment.snapshot.message }}{% endif %}{% endif %}"></div>
+      <div class="h-2 rounded-[1px] {{ segment.css_class }}" title="{{ segment.title }}"></div>
     {% empty %}<div class="h-2 rounded-[1px] bg-slate-300" title="未配置测试点"></div>{% endfor %}
     </div>
   {% endfor %}
